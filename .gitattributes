@@ -1,0 +1,11 @@
+# Everything in this repo eventually runs inside a Linux container, so the
+# canonical line ending in git is LF. Without this, files authored on Windows
+# get committed with CRLF and shell scripts / entrypoints fail inside Docker
+# with a misleading "no such file or directory".
+* text=auto eol=lf
+
+# Binary artifacts git must never line-ending-munge
+*.parquet binary
+*.joblib binary
+*.png binary
+*.gz binary
