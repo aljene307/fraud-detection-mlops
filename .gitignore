@@ -1,0 +1,30 @@
+# Data — creditcard.csv is ~144MB; pulled by `python -m src.data.download`
+data/
+
+# MLflow local tracking + artifact store
+mlruns/
+mlartifacts/
+
+# Secrets — never commit the Kaggle API token
+.env
+kaggle.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated drift reports and plots
+reports/
+
+# OS / editor
+.DS_Store
+Thumbs.db
