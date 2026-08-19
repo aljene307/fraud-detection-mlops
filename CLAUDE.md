@@ -10,7 +10,9 @@ Prometheus, Grafana, Evidently, GitHub Actions.
 - src/ layout, typed functions, pytest for everything testable.
 - Never report accuracy for the fraud model — this dataset is 0.17% positive.
   Primary metric is PR-AUC; also track recall at fixed precision.
-- Models are loaded ONLY from the MLflow "Production" stage in serving code.
+- Models are loaded ONLY via the MLflow alias `models:/fraud-detector@production`
+  in serving code — never a run URI, never a pickle. (Registry *stages* are
+  deprecated since MLflow 2.9; aliases replace them. See src/config.py.)
 
 ## Commands
 - Split data:      python -m src.features
