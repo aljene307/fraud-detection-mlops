@@ -1,5 +1,7 @@
 # Data — creditcard.csv is ~144MB; pulled by `python -m src.data.download`
-data/
+# NOTE the leading slash: it anchors this to the repo root. Without it, `data/`
+# would also match the source package src/data/ and silently un-track its code.
+/data/
 
 # MLflow local tracking + artifact store
 mlruns/

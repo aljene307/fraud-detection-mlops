@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fraud-mlops"
+version = "0.1.0"
+description = "Real-time credit-card fraud detection - end-to-end MLOps platform"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+
+# Versions figees volontairement (==) : un modele n'est reproductible que si
+# l'environnement qui l'a produit l'est aussi. Le gate PR-AUC de la Phase 4
+# comparerait sinon des runs entraines sur des piles differentes.
+dependencies = [
+    "pandas==2.3.3",            # derniere 2.x avec wheel cp313 ; mlflow impose pandas<3
+    "numpy==2.5.2",
+    "scikit-learn==1.9.0",
+    "xgboost==3.4.1",
+    "imbalanced-learn==0.14.2", # fournit SMOTE
+    "mlflow==3.15.1",
+    "pyarrow==25.0.1",          # backend parquet
+    "joblib==1.5.3",            # persistance du scaler
+    "matplotlib==3.11.1",       # courbes PR / matrice de confusion loggees en artefacts
+    "kaggle==2.2.4",            # telechargement du dataset
+]
+
+# Non installe dans l'image Docker (Phase 2) : image plus legere, moins de
+# surface d'attaque. Installe en local via  pip install -e ".[dev]"
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "ruff==0.16.3",
+]
+
+# `src` est un vrai paquet importable (et non un dossier "src-layout"), parce
+# que CLAUDE.md documente les commandes sous la forme `python -m src.features`.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "requires_data: test necessitant le vrai CSV Kaggle (skippe s'il est absent)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
