@@ -232,8 +232,12 @@ def build_splits(
         },
     }
 
-    SPLIT_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
-    SPLIT_MANIFEST.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    # Le manifeste suit out_dir. Le derier d'une constante pointant en dur sur
+    # data/processed ferait ecrire les parquets et le manifeste a deux endroits
+    # differents des que --out-dir est utilise : le manifeste decrirait alors un
+    # decoupage qui n'est pas celui des fichiers a cote de lui.
+    manifest_path = out_dir / SPLIT_MANIFEST.name
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
 
