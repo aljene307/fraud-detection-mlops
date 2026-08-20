@@ -47,3 +47,12 @@ TARGET: str = "Class"
 # Valeurs de reference du dataset ULB, utilisees par la validation du step 0.C.
 EXPECTED_ROWS: int = 284_807
 EXPECTED_FRAUDS: int = 492
+
+# V1..V28 sont les composantes PCA anonymisees ; Time et Amount sont les deux
+# seules colonnes brutes. L'ordre compte : on valide la liste exacte.
+EXPECTED_COLUMNS: tuple[str, ...] = (
+    "Time",
+    *(f"V{i}" for i in range(1, 29)),
+    "Amount",
+    TARGET,
+)
