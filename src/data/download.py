@@ -25,6 +25,7 @@ from src.config import (
     EXPECTED_COLUMNS,
     EXPECTED_FRAUDS,
     EXPECTED_ROWS,
+    EXPECTED_SHA256,
     RAW_CSV,
     TARGET,
 )
@@ -60,9 +61,15 @@ class DatasetStats:
     fraud_rate: float
     sha256: str
     size_bytes: int
+    sha256_matches_reference: bool
 
     def render(self) -> str:
         bar = "=" * 70
+        seal = (
+            "conforme a la reference"
+            if self.sha256_matches_reference
+            else "DIFFERENTE de la reference (acceptee via --allow-hash-mismatch)"
+        )
         return "\n".join(
             [
                 "",
@@ -75,6 +82,7 @@ class DatasetStats:
                 f"  Colonnes  : {self.columns}",
                 f"  Fraudes   : {self.frauds} ({self.fraud_rate:.4%})",
                 f"  SHA-256   : {self.sha256}",
+                f"              [{seal}]",
                 bar,
                 "",
                 "  Cette empreinte taguera chaque run MLflow en Phase 1: elle permet",
@@ -123,6 +131,34 @@ def _manual_instructions(dest: Path) -> str:
     )
 
 
+def _hash_mismatch_message(digest: str, *, alone: bool) -> str:
+    """Message affiche quand l'empreinte ne correspond pas a la reference.
+
+    ``alone=True`` signifie que tous les autres controles sont passes : le
+    contenu est conforme mais les octets different, ce qui pointe vers une
+    cause tres differente d'une corruption.
+    """
+    lines = [
+        "  - Empreinte SHA-256 differente de la reference.",
+        f"      attendue : {EXPECTED_SHA256}",
+        f"      obtenue  : {digest}",
+    ]
+    if alone:
+        lines += [
+            "",
+            "    Tous les autres controles passent : le CONTENU est conforme, seuls",
+            "    les OCTETS different. Cas typiques : fichier re-enregistre par un",
+            "    tableur, fins de ligne converties, ou export d'une autre source.",
+        ]
+    lines += [
+        "",
+        "    Si ce fichier doit devenir la nouvelle reference :",
+        "      1. relancer avec --allow-hash-mismatch pour valider le reste",
+        f'      2. dans src/config.py :  EXPECTED_SHA256 = "{digest}"',
+    ]
+    return "\n".join(lines)
+
+
 def download_from_kaggle(dest_dir: Path) -> Path:
     """Telecharge et dezippe le dataset via l'API Kaggle.
 
@@ -153,7 +189,7 @@ def download_from_kaggle(dest_dir: Path) -> Path:
     return csv_path
 
 
-def validate_dataset(path: Path) -> DatasetStats:
+def validate_dataset(path: Path, *, allow_hash_mismatch: bool = False) -> DatasetStats:
     """Valide le CSV brut, ou leve DatasetValidationError avec le detail.
 
     Les controles sont ordonnes en couches : chacune suppose la precedente
@@ -249,10 +285,26 @@ def validate_dataset(path: Path) -> DatasetStats:
             "(signe classique d'un fichier corrompu en cours de route)"
         )
 
+    # L'empreinte est le dernier controle collecte, et volontairement pas le
+    # premier : elle detecte tout, mais ne dit jamais QUOI. En la placant ici,
+    # un fichier tronque produit d'abord le diagnostic lisible, puis l'empreinte
+    # en complement -- au lieu d'un simple "les octets different".
+    digest = sha256_of(path)
+    hash_matches = digest == EXPECTED_SHA256
+    if not hash_matches and not allow_hash_mismatch:
+        problems.append(_hash_mismatch_message(digest, alone=not problems))
+
     if problems:
         raise DatasetValidationError(
             f"{path.name} n'est pas le dataset attendu. Problemes detectes :\n"
             + "\n".join(problems)
+        )
+
+    if not hash_matches:
+        print(
+            "[data] ATTENTION : empreinte non conforme, acceptee car "
+            "--allow-hash-mismatch est actif.",
+            file=sys.stderr,
         )
 
     return DatasetStats(
@@ -261,12 +313,18 @@ def validate_dataset(path: Path) -> DatasetStats:
         columns=len(actual_columns),
         frauds=n_frauds,
         fraud_rate=n_frauds / n_rows,
-        sha256=sha256_of(path),
+        sha256=digest,
         size_bytes=size_bytes,
+        sha256_matches_reference=hash_matches,
     )
 
 
-def ensure_dataset(path: Path = RAW_CSV, *, allow_download: bool = True) -> DatasetStats:
+def ensure_dataset(
+    path: Path = RAW_CSV,
+    *,
+    allow_download: bool = True,
+    allow_hash_mismatch: bool = False,
+) -> DatasetStats:
     """Garantit la presence d'un dataset valide, ou leve une DatasetError.
 
     CSV deja present -> on valide. Sinon -> tentative Kaggle, puis validation.
@@ -281,7 +339,7 @@ def ensure_dataset(path: Path = RAW_CSV, *, allow_download: bool = True) -> Data
         except DatasetError as exc:
             print(f"[data] {exc}", file=sys.stderr)
 
-    return validate_dataset(path)
+    return validate_dataset(path, allow_hash_mismatch=allow_hash_mismatch)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -300,12 +358,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="ne pas tenter l'API Kaggle : valider uniquement le fichier local",
     )
+    parser.add_argument(
+        "--allow-hash-mismatch",
+        action="store_true",
+        help="accepter une empreinte SHA-256 differente de EXPECTED_SHA256",
+    )
     args = parser.parse_args(argv)
 
     args.path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        stats = ensure_dataset(args.path, allow_download=not args.no_download)
+        stats = ensure_dataset(
+            args.path,
+            allow_download=not args.no_download,
+            allow_hash_mismatch=args.allow_hash_mismatch,
+        )
     except DatasetError as exc:
         print("\n" + "!" * 70, file=sys.stderr)
         print("  ECHEC : DATASET INVALIDE OU ABSENT", file=sys.stderr)

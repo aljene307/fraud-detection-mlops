@@ -18,6 +18,45 @@ that predicts "never fraud" scores 99.83% accuracy while catching zero fraud, so
 accuracy is meaningless here. The primary metric is **PR-AUC**, alongside
 **recall at a fixed precision**.
 
+## How the data is split
+
+`python -m src.features` writes a **3-way 60/20/20** split to `data/processed/`.
+Two strategies are available.
+
+**`--strategy=stratified` (default).** A random split that draws separately from
+the fraud and non-fraud pools, so all three folds keep the population fraud rate
+of ~0.17%. With only 492 positives in the whole dataset, an unstratified draw
+would hand one fold 80 frauds and another 115 purely by chance, and validation
+metrics would swing for reasons unrelated to the model.
+
+**`--strategy=time`.** Sorts by `Time` and cuts chronologically: train on the
+past, test on the future. This mirrors what actually happens in production and
+is the more honest estimate of deployed performance. The trade-off is that
+stratification becomes impossible by construction — you cannot both fix the
+class proportions and respect chronology — so each fold's fraud rate is
+inherited rather than chosen, and with so few positives the test fold's metrics
+get noisy.
+
+| | stratified | time |
+|---|---|---|
+| Fraud rate per fold | controlled (~0.17%) | inherited, uneven |
+| Metric variance | low | higher |
+| Realism | ignores time ordering | matches deployment |
+| Used for | the CI gate baseline | a sanity check on optimism |
+
+The default is `stratified` because the Phase 4 CI gate needs a low-variance,
+reproducible number: a gate that trips on split noise is a gate nobody trusts.
+The time-based split is kept as a flag to quantify how optimistic the stratified
+number is.
+
+**The test fold is never used to make decisions.** The decision threshold and
+all model comparisons are settled on the validation fold; test is read once, for
+the final reported figure. Choosing a threshold on test and then reporting a
+metric on that same test inflates the result.
+
+A `split_manifest.json` records the seed, strategy, per-fold counts and the
+source file's SHA-256, so any split is reproducible and traceable.
+
 ## Development setup
 
 Requires Python 3.12 or 3.13.

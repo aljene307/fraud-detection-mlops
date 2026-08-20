@@ -48,6 +48,14 @@ TARGET: str = "Class"
 EXPECTED_ROWS: int = 284_807
 EXPECTED_FRAUDS: int = 492
 
+# Empreinte du CSV ULB de reference, relevee le 2026-08-20 sur le fichier
+# telecharge depuis Kaggle. Toute difference d'octet la fait changer.
+#
+# Pour adopter volontairement un autre fichier de reference :
+#   1. python -m src.data.download --allow-hash-mismatch   (verifie le reste)
+#   2. coller ci-dessous l'empreinte affichee par le script
+EXPECTED_SHA256: str = "76274b691b16a6c49d3f159c883398e03ccd6d1ee12d9d8ee38f4b4b98551a89"
+
 # V1..V28 sont les composantes PCA anonymisees ; Time et Amount sont les deux
 # seules colonnes brutes. L'ordre compte : on valide la liste exacte.
 EXPECTED_COLUMNS: tuple[str, ...] = (
