@@ -4,6 +4,9 @@
 /data/
 
 # MLflow local tracking + artifact store
+# mlflow.db is the SQLite backend: MLflow 3 refuses the file store, and the
+# model registry (needed for the @production alias) requires a database.
+mlflow.db
 mlruns/
 mlartifacts/
 
