@@ -76,9 +76,36 @@ captures the full transitive tree used by Docker and CI.
 |---|---|
 | Split data | `python -m src.features` |
 | Train + log to MLflow | `python -m src.training.train` |
+| Promote the best run | `python -m src.training.train --promote --min-pr-auc 0.80` |
+| Browse experiments | `mlflow ui --backend-store-uri sqlite:///mlflow.db` |
 | Serve locally | `uvicorn src.serving.app:app --reload` |
 | Full stack | `docker compose up` |
 | Deploy to k8s | `helm install fraud ./helm` |
+
+## Experiment tracking and the model registry
+
+Tracking uses a **SQLite** backend (`sqlite:///mlflow.db`), not the classic
+`./mlruns` directory: MLflow 3 refuses the filesystem store outright, and the
+model registry — which the `@production` alias depends on — has never worked
+with it. Override with the `MLFLOW_TRACKING_URI` environment variable to point
+at a remote server; no code changes.
+
+Every run records its parameters, `val_`/`test_`-prefixed metrics, a PR curve
+and confusion matrix, and tags carrying the git commit, **whether the working
+tree was dirty**, and the dataset's SHA-256. A run made from a dirty tree is not
+reproducible from its commit alone, so that fact is recorded rather than hidden.
+
+`mlflow.autolog()` is deliberately **not** used: it logs
+`training_accuracy_score` automatically, which would break this project's rule
+against reporting accuracy. Logging is explicit, and a runtime guard rejects any
+metric key containing `accuracy`.
+
+**Promotion is never automatic.** Training registers every run as a new version,
+but the `@production` alias only moves when you pass `--promote`, and only if the
+best run clears `--min-pr-auc`. A run that finishes should not become production
+merely because it finished; in Phase 4 the CI gate takes over that authority.
+Serving resolves `models:/fraud-detector@production`, so rolling back is
+repointing the alias — no redeploy, no code change.
 
 ## Licence / data
 

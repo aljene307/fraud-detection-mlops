@@ -26,10 +26,16 @@ SPLIT_MANIFEST: Path = DATA_PROCESSED / "split_manifest.json"
 SCALER_PATH: Path = DATA_PROCESSED / "scaler.joblib"
 
 # --- MLflow ----------------------------------------------------------------
+# Backend SQLite, PAS le store fichier. MLflow 3 refuse "file:./mlruns" avec
+# "filesystem tracking backend is in maintenance mode", et de toute facon le
+# registre de modeles n'a jamais fonctionne avec le store fichier -- or l'alias
+# @production en depend.
+#
 # Surchargeable par variable d'environnement : en Phase 5, le pod Kubernetes
 # pointera vers un serveur MLflow distant sans qu'une ligne de code ne change.
+MLFLOW_DB: Path = PROJECT_ROOT / "mlflow.db"
 MLFLOW_TRACKING_URI: str = os.getenv(
-    "MLFLOW_TRACKING_URI", (PROJECT_ROOT / "mlruns").as_uri()
+    "MLFLOW_TRACKING_URI", f"sqlite:///{MLFLOW_DB.as_posix()}"
 )
 
 EXPERIMENT_NAME: str = "fraud-detection"

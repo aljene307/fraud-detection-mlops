@@ -17,6 +17,10 @@ Prometheus, Grafana, Evidently, GitHub Actions.
 ## Commands
 - Split data:      python -m src.features
 - Train + log:     python -m src.training.train
+- Promote best:    python -m src.training.train --promote --min-pr-auc 0.80
+- MLflow UI:       mlflow ui --backend-store-uri sqlite:///mlflow.db
+                   (SQLite, NOT ./mlruns — MLflow 3 refuses the file store,
+                   and the model registry has never worked with it)
 - Serve locally:   uvicorn src.serving.app:app --reload
 - Full stack:      docker compose up
 - Deploy to k8s:   helm install fraud ./helm

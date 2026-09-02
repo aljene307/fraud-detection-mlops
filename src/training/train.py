@@ -38,7 +38,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
-from src.config import DATA_PROCESSED, PROJECT_ROOT, TARGET
+from src.config import DATA_PROCESSED, EXPERIMENT_NAME, PROJECT_ROOT, TARGET
 from src.features.build import FEATURE_COLUMNS, SPLIT_FILES
 from src.training.metrics import (
     DEFAULT_MIN_PRECISION,
@@ -100,6 +100,9 @@ class RunResult:
     n_train_positives: int
     best_iteration: int | None = None
     warnings: list[str] = field(default_factory=list)
+    # Le modele entraine, transporte pour que tracking.py puisse l'enregistrer.
+    # repr=False : sinon afficher un RunResult deverserait tout un booster.
+    model: Any = field(default=None, repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +350,7 @@ def run_one(
         n_train_positives=n_positives,
         best_iteration=best_iteration,
         warnings=warnings,
+        model=model,
     )
 
 
@@ -503,6 +507,32 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--processed-dir", type=Path, default=DATA_PROCESSED)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_REPORTS_DIR)
+    parser.add_argument(
+        "--mlflow",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="journaliser dans MLflow (--no-mlflow pour s'en passer)",
+    )
+    parser.add_argument(
+        "--experiment",
+        default=EXPERIMENT_NAME,
+        help=f"nom de l'experience MLflow (defaut : {EXPERIMENT_NAME})",
+    )
+    parser.add_argument(
+        "--promote",
+        action="store_true",
+        help=(
+            "deplacer l'alias @production vers le meilleur run de la session. "
+            "Jamais automatique : un run experimental ne doit pas devenir la "
+            "production tout seul."
+        ),
+    )
+    parser.add_argument(
+        "--min-pr-auc",
+        type=float,
+        default=0.80,
+        help="plancher de PR-AUC de test exige pour promouvoir (defaut : 0.80)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -522,8 +552,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"Seuil choisi sur la validation a >= {args.min_precision:.0%} de precision.\n")
 
+    # Import tardif : sans --mlflow, l'entrainement ne doit dependre d'aucun
+    # serveur de tracking ni meme du module qui en parle.
+    client = None
+    if args.mlflow:
+        from src.training import tracking
+
+        client = tracking.start_session(experiment=args.experiment)
+        print(f"MLflow : {tracking.MLFLOW_TRACKING_URI}  (experience {args.experiment})\n")
+
     kinds = MODEL_KINDS if args.model == "all" else (args.model,)
     results: list[RunResult] = []
+    tracked: dict[str, Any] = {}
     for kind in kinds:
         print(f"[train] {kind} ...")
         try:
@@ -541,9 +581,42 @@ def main(argv: list[str] | None = None) -> int:
         print(render_run(result, args.min_precision))
         write_report(result, args.out_dir)
 
+        if client is not None:
+            entry = tracking.log_run(
+                result, splits, client=client, processed_dir=args.processed_dir
+            )
+            tracked[kind] = entry
+            print(
+                f"    MLflow run {entry.run_id[:12]}...  "
+                f"-> {tracking.REGISTERED_MODEL} v{entry.version}\n"
+            )
+
     if len(results) > 1:
         print(render_comparison(results, args.min_precision))
-    print(f"Rapports JSON ecrits dans {args.out_dir}\n")
+    print(f"Rapports JSON ecrits dans {args.out_dir}")
+
+    if args.promote:
+        if client is None:
+            print("\n--promote exige MLflow : retire --no-mlflow.\n", file=sys.stderr)
+            return 1
+        try:
+            promoted = tracking.promote_best(
+                results, tracked, client=client, min_pr_auc=args.min_pr_auc
+            )
+        except tracking.TrackingError as exc:
+            print(f"\n{exc}\n", file=sys.stderr)
+            return 1
+        print(
+            f"\nAlias @{tracking.PRODUCTION_ALIAS} -> "
+            f"{tracking.REGISTERED_MODEL} v{promoted.version} ({promoted.model_kind})\n"
+            f"  Le serving chargera : models:/{tracking.REGISTERED_MODEL}"
+            f"@{tracking.PRODUCTION_ALIAS}\n"
+        )
+    elif client is not None:
+        print(
+            "\nAucune promotion. Pour deplacer l'alias @production vers le "
+            "meilleur run :\n  python -m src.training.train --promote\n"
+        )
     return 0
 
 
