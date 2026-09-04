@@ -23,6 +23,10 @@ dependencies = [
     "joblib==1.5.3",            # persistance du scaler
     "matplotlib==3.11.1",       # courbes PR / matrice de confusion loggees en artefacts
     "kaggle==2.2.4",            # telechargement du dataset
+    # Tire transitivement par mlflow, mais on l'utilise DIRECTEMENT pour lire
+    # config/gate.yaml : sans declaration, le jour ou mlflow change de parseur
+    # le gate CI casse sans qu'on ait touche a quoi que ce soit.
+    "pyyaml==6.0.3",
 ]
 
 # Non installe dans l'image Docker (Phase 2) : image plus legere, moins de

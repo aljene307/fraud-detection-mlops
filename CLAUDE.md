@@ -18,6 +18,8 @@ Prometheus, Grafana, Evidently, GitHub Actions.
 - Split data:      python -m src.features
 - Train + log:     python -m src.training.train
 - Promote best:    python -m src.training.train --promote --min-pr-auc 0.80
+- Check the gate:  python -m src.training.gate --report reports/training/xgb.json
+                   (exit 0/1; floor lives in config/gate.yaml, versioned)
 - MLflow UI:       mlflow ui --backend-store-uri sqlite:///mlflow.db
                    (SQLite, NOT ./mlruns — MLflow 3 refuses the file store,
                    and the model registry has never worked with it)

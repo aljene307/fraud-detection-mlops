@@ -78,6 +78,7 @@ captures the full transitive tree used by Docker and CI.
 | Train + log to MLflow | `python -m src.training.train` |
 | Promote the best run | `python -m src.training.train --promote --min-pr-auc 0.80` |
 | Browse experiments | `mlflow ui --backend-store-uri sqlite:///mlflow.db` |
+| Apply the quality gate | `python -m src.training.gate --report reports/training/xgb.json` |
 | Serve locally | `uvicorn src.serving.app:app --reload` |
 | Full stack | `docker compose up` |
 | Deploy to k8s | `helm install fraud ./helm` |
@@ -99,6 +100,27 @@ reproducible from its commit alone, so that fact is recorded rather than hidden.
 `training_accuracy_score` automatically, which would break this project's rule
 against reporting accuracy. Logging is explicit, and a runtime guard rejects any
 metric key containing `accuracy`.
+
+## The quality gate
+
+`config/gate.yaml` holds the PR-AUC floor CI enforces, and it is versioned:
+moving it is a deliberate act visible in review, not a setting that drifts.
+`python -m src.training.gate` reads it and exits 0 or 1, so Phase 4's CI step is
+one line with no log parsing.
+
+The floor is **0.80**, and the file records why. The same XGBoost model scored
+0.8234 on validation and 0.8727 on test — a 0.049 swing caused by nothing but
+which frauds landed in which fold, since each holds only ~98 of them. That is an
+empirical measurement of fold noise, and it brackets the floor from both sides:
+it must sit below the worst fold of a good model (0.8234) or CI would reject the
+model we want to keep, and above the linear baseline (0.7602) or a model that
+lost everything XGBoost contributes would sail through. The usable window is
+[0.78–0.81].
+
+The gate answers "is this model still fit to ship?", not "is this the best we
+have ever had?". Catching a slide from 0.8727 to 0.84 needs a comparison against
+the current `@production` model rather than a fixed floor — a refinement for
+after Phase 4, once the floor's stability has been observed.
 
 **Promotion is never automatic.** Training registers every run as a new version,
 but the `@production` alias only moves when you pass `--promote`, and only if the

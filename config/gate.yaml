@@ -1,0 +1,73 @@
+# Seuil de qualite du modele, applique par la CI (Phase 4).
+#
+# Ce fichier est LA reference partagee entre un entrainement local et la CI.
+# Il est versionne dans git : le modifier est un acte delibere, visible en
+# revue, et non un reglage qui derive dans un coin.
+#
+# Lu par :  python -m src.training.gate --report reports/training/<modele>.json
+# Code de retour 0 si le modele passe, 1 sinon.
+
+version: 1
+
+gate:
+  # La CI compare CETTE metrique du rapport d'entrainement au plancher.
+  # test_pr_auc et non val_pr_auc : la validation a servi a choisir le seuil de
+  # decision, elle n'est donc plus un juge neutre.
+  metric: test_pr_auc
+  min_pr_auc: 0.80
+
+  # Volontairement UN SEUL critere bloquant. recall_at_p90 depend du seuil de
+  # decision, donc bouge davantage ; deux criteres doubleraient les facons dont
+  # la CI echoue a tort, et un gate auquel on ne fait pas confiance finit
+  # desactive. Il est enregistre ci-dessous pour suivi, pas pour bloquer.
+
+# --- D'ou vient 0.80 -------------------------------------------------------
+#
+# Mesures reelles au commit ci-dessous, sur le split stratifie 60/20/20 :
+#
+#     modele        val PR-AUC    test PR-AUC    recall@p90
+#     xgb             0.8234        0.8727         0.8384
+#     xgb_smote       0.8172        0.8685         0.8384
+#     logreg          0.6850        0.7602         0.0000
+#
+# Le meme modele xgb obtient 0.8234 sur un fold et 0.8727 sur l'autre : un
+# ecart de 0.049 du seul fait de quelles fraudes sont tombees ou (chaque fold
+# ne contient que ~98 fraudes). C'est une mesure empirique du bruit de fold, et
+# l'echelle a partir de laquelle un ecart cesse d'etre du hasard.
+#
+# Le plancher est donc enserre entre deux bornes :
+#
+#   borne HAUTE : il doit passer sous le PIRE fold d'un BON modele (0.8234),
+#                 sinon la CI rejetterait le modele qu'on veut garder.
+#   borne BASSE : il doit rejeter un retour a la baseline lineaire (0.7602),
+#                 sinon un modele ayant perdu tout l'apport de XGBoost passe.
+#
+# Fenetre utile : [0.78 - 0.81]. Retenu : 0.80.
+#   -0.0727 sous le meilleur score (-8.3 % en relatif)
+#   ~1.5x le bruit de fold mesure
+#   +0.040 au-dessus de logreg, -0.023 sous le pire fold observe
+#
+# Ce que la marge protege : la derive d'environnement (dev Windows contre
+# runner Linux, montee de version d'une dependance) et les changements
+# deliberes. La CI reentrainera sur le meme split, la meme graine et le meme
+# SHA de dataset, donc elle devrait reproduire ~0.8727 de pres.
+#
+# Ce que ce gate ne fait PAS : il repond a "ce modele est-il encore bon a
+# expedier ?", pas a "est-ce le meilleur qu'on ait eu ?". Attraper une glissade
+# de 0.8727 a 0.84 demande une comparaison au modele @production courant, pas
+# un plancher fixe. Raffinement prevu apres la Phase 4, une fois la stabilite
+# du plancher observee.
+
+baseline:
+  recorded_at_commit: c3b4ef66a008647a72ff74094e92364dac5a0895
+  recorded_on: 2026-09-02
+  model: xgb
+  imbalance: scale_pos_weight
+  dataset_sha256: 76274b691b16a6c49d3f159c883398e03ccd6d1ee12d9d8ee38f4b4b98551a89
+  split_strategy: stratified
+  split_seed: 42
+  val_pr_auc: 0.8234
+  test_pr_auc: 0.8727
+  test_recall_at_p90: 0.8384
+  test_roc_auc: 0.9793
+  frozen_threshold: 0.8080154657363892
