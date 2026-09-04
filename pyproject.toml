@@ -27,6 +27,16 @@ dependencies = [
     # config/gate.yaml : sans declaration, le jour ou mlflow change de parseur
     # le gate CI casse sans qu'on ait touche a quoi que ce soit.
     "pyyaml==6.0.3",
+
+    # --- Serving (Phase 2) -------------------------------------------------
+    # fastapi, uvicorn, pydantic et starlette arrivaient jusqu'ici PAR ACCIDENT,
+    # tires par le serveur interne de mlflow. Le jour ou mlflow change de
+    # framework web, le serving casserait sans qu'on ait touche a une ligne.
+    # Meme raisonnement que pyyaml ci-dessus.
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.4",
+    "pydantic==2.13.4",         # validation des entrees de l'API
+    "prometheus-client==0.26.0",  # exposition des metriques sur /metrics
 ]
 
 # Non installe dans l'image Docker (Phase 2) : image plus legere, moins de
