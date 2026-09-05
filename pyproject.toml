@@ -46,6 +46,11 @@ dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "ruff==0.16.3",
+    # Requis par fastapi.testclient.TestClient, qui s'appuie dessus pour
+    # simuler des requetes sans lancer de vrai serveur. httpx2 et non httpx :
+    # starlette 1.6 deprecie httpx pour son TestClient. Uniquement en dev,
+    # l'image Docker n'en a pas besoin.
+    "httpx2==2.12.0",
 ]
 
 # `src` est un vrai paquet importable (et non un dossier "src-layout"), parce
