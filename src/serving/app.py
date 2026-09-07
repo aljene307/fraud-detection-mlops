@@ -37,11 +37,17 @@ from typing import Annotated, Any
 
 import numpy as np
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from src.serving.metrics import (
+    measure_latency,
+    observe_prediction,
+    render_exposition,
+    set_model_info,
+)
 from src.serving.model import ModelBundle, ModelLoadError, load_production_model
 from src.serving.schemas import (
     TRANSACTION_FIELDS,
@@ -111,6 +117,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         app.state.bundle = bundle
         logger.info("Modele charge : %s", bundle.describe())
+
+    # Publiee dans les deux cas : en mode degrade elle vaut version="none",
+    # ce qui est alertable -- alors qu'une metrique absente ne se distingue pas
+    # d'un service injoignable.
+    set_model_info(app.state.bundle)
 
     yield
 
@@ -258,12 +269,17 @@ def predict(
     d'evenements et le debit s'effondrerait ; en ``def``, FastAPI l'execute
     dans un pool de threads, ce qui est correct pour du travail bloquant.
     """
-    probability = float(_score(bundle, [transaction.model_dump()])[0])
+    with measure_latency("single"):
+        probability = float(_score(bundle, [transaction.model_dump()])[0])
+
+    # >= et non > : meme convention que confusion_at_threshold dans
+    # training/metrics.py, avec laquelle le seuil a ete choisi.
+    is_fraud = probability >= bundle.threshold
+    observe_prediction(endpoint="single", score=probability, is_fraud=is_fraud)
+
     return PredictionOut(
         fraud_probability=probability,
-        # >= et non > : meme convention que confusion_at_threshold dans
-        # metrics.py, avec laquelle le seuil a ete choisi.
-        is_fraud=probability >= bundle.threshold,
+        is_fraud=is_fraud,
         threshold=bundle.threshold,
         threshold_source=bundle.threshold_source,
         model_name=bundle.model_name,
@@ -283,7 +299,18 @@ def predict_batch(
     mesurer le modele plutot que la latence reseau.
     """
     rows = [transaction.model_dump() for transaction in payload.transactions]
-    scores = _score(bundle, rows)
+
+    # Un seul chronometrage pour l'appel entier : c'est bien la duree d'UN
+    # scoring. Le compteur, lui, s'incremente par transaction, ce qui donne un
+    # debit en transactions/seconde. Les deux lectures restent disponibles :
+    # rate(latency_count) = appels/s, rate(predictions_total) = transactions/s.
+    with measure_latency("batch"):
+        scores = _score(bundle, rows)
+
+    decisions = [float(score) >= bundle.threshold for score in scores]
+    for score, is_fraud in zip(scores, decisions, strict=True):
+        observe_prediction(endpoint="batch", score=float(score), is_fraud=is_fraud)
+
     return BatchOut(
         count=len(rows),
         threshold=bundle.threshold,
@@ -294,8 +321,25 @@ def predict_batch(
             BatchPredictionOut(
                 index=index,
                 fraud_probability=float(score),
-                is_fraud=float(score) >= bundle.threshold,
+                is_fraud=is_fraud,
             )
-            for index, score in enumerate(scores)
+            for index, (score, is_fraud) in enumerate(
+                zip(scores, decisions, strict=True)
+            )
         ],
     )
+
+
+@app.get("/metrics", tags=["operations"])
+def metrics() -> Response:
+    """Exposition Prometheus.
+
+    Comme /health, cet endpoint ne consulte JAMAIS le modele. Prometheus
+    fonctionne en pull : s'il echouait en mode degrade, on perdrait le service
+    de vue exactement au moment ou l'on a le plus besoin de le voir.
+
+    On renvoie une Response brute plutot qu'un JSONResponse : le format
+    Prometheus est du texte, pas du JSON, et son Content-Type est precis.
+    """
+    payload, content_type = render_exposition()
+    return Response(content=payload, media_type=content_type)
