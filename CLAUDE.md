@@ -24,7 +24,11 @@ Prometheus, Grafana, Evidently, GitHub Actions.
                    (SQLite, NOT ./mlruns — MLflow 3 refuses the file store,
                    and the model registry has never worked with it)
 - Serve locally:   uvicorn src.serving.app:app --reload
-- Full stack:      docker compose up
+- Full stack:      cp .env.example .env && docker compose up -d --build
+                   (minio + mlflow + scorer; see README for the migration steps)
+- Regen the lock:  python scripts/freeze_lock.py
+                   (NOT a bare `pip freeze` — a Windows lock carries pywin32,
+                   which does not exist on Linux and breaks the Docker build)
 - Deploy to k8s:   helm install fraud ./helm
 
 ## Design rules

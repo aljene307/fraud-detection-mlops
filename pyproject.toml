@@ -37,6 +37,9 @@ dependencies = [
     "uvicorn[standard]==0.52.4",
     "pydantic==2.13.4",         # validation des entrees de l'API
     "prometheus-client==0.26.0",  # exposition des metriques sur /metrics
+    # MLflow s'en sert pour lire et ecrire les artefacts en s3:// (MinIO en
+    # local, S3/GCS en production). Sans lui, un URI s3:// leve a l'execution.
+    "boto3==1.43.91",
 ]
 
 # Non installe dans l'image Docker (Phase 2) : image plus legere, moins de
