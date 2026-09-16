@@ -101,6 +101,73 @@ reproducible from its commit alone, so that fact is recorded rather than hidden.
 against reporting accuracy. Logging is explicit, and a runtime guard rejects any
 metric key containing `accuracy`.
 
+## Running the stack in Docker
+
+```bash
+cp .env.example .env          # dev-only credentials, git-ignored
+docker compose up -d --build  # first build pulls ~1.5 GB, takes a few minutes
+```
+
+Four services come up: **MinIO** (S3-compatible object storage, console on
+:9001), a one-shot **bucket creator**, the **MLflow** tracking server and
+registry (:5000), and the **scorer** (:8000). Inside the Docker network services
+reach each other by name (`http://minio:9000`); from the host it is `localhost`
+and the published port.
+
+On a fresh stack the registry is empty, so the scorer starts **degraded** —
+`/health` answers 200, `/ready` answers 503 with the reason. That is the
+designed behaviour, not a failure. Populate the registry:
+
+```bash
+# PowerShell — the host talks to localhost, containers talk to service names
+$env:MLFLOW_TRACKING_URI    = "http://localhost:5000"
+$env:MLFLOW_S3_ENDPOINT_URL = "http://localhost:9000"
+$env:AWS_ACCESS_KEY_ID      = "fraud-dev"
+$env:AWS_SECRET_ACCESS_KEY  = "fraud-dev-password"
+
+.venv\Scripts\python.exe -m src.training.train --promote
+docker compose restart scorer
+curl http://localhost:8000/ready
+```
+
+### Why object storage rather than a shared folder
+
+A file-based artifact store writes **absolute paths** into the MLflow database:
+
+```
+file:C:/Users/.../mlruns/1/9add.../artifacts     what AND where, inseparably
+s3://mlflow/1/9add.../artifacts                  what
+MLFLOW_S3_ENDPOINT_URL=http://minio:9000         where — configuration
+```
+
+Those absolute paths do not exist inside a Linux container, and no volume mount
+fixes that because the database dictates the path. Object storage splits the two
+concerns: the URI names the object, an environment variable says where to ask.
+The same model then loads from Windows, from a container, and from Kubernetes
+with nothing in the database changing.
+
+MinIO is swapped for real S3, GCS or Azure Blob by changing one endpoint.
+
+### Regenerating the dependency lock
+
+Use `python scripts/freeze_lock.py`, not a bare `pip freeze`, which gets it
+wrong twice and both failures are silent.
+
+It would carry the **dev group**: the local venv is installed with
+`pip install -e ".[dev]"`, so `pip freeze` sees pytest, ruff, coverage and
+httpx2 — and the image installs from this lock, so it would ship the test
+tooling to production. The script resolves the runtime closure and keeps only
+those names (12 packages dropped).
+
+It would also carry **`pywin32`**, pulled in transitively by mlflow on Windows
+and absent from Linux, failing the Docker build with
+`No matching distribution found`. The script adds the PEP 508 marker
+`sys_platform == "win32"`, which keeps one lock file valid on both platforms.
+
+Versions come from what is *installed*, not from a fresh resolution: a fresh
+resolve proposed newer versions for 27 packages. A lock should pin what was
+tested, not what happens to be available today.
+
 ## The quality gate
 
 `config/gate.yaml` holds the PR-AUC floor CI enforces, and it is versioned:

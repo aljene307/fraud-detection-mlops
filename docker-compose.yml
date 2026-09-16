@@ -1,0 +1,144 @@
+# Pile locale complete : stockage objet, tracking MLflow, et le scoreur.
+#
+#   docker compose up -d --build
+#
+# Pourquoi MinIO plutot qu'un simple dossier partage : un magasin d'artefacts
+# sur fichiers enregistre des chemins ABSOLUS dans la base MLflow
+# (file:C:/Users/.../mlruns/...), qui n'existent pas dans un conteneur Linux.
+# Avec du stockage objet, l'URI dit seulement QUOI (s3://mlflow/...) tandis que
+# le OU devient de la configuration (MLFLOW_S3_ENDPOINT_URL). Le meme modele est
+# alors chargeable depuis Windows (localhost:9000), depuis un conteneur
+# (minio:9000) et demain depuis Kubernetes, sans qu'une ligne de la base change.
+#
+# Resolution de noms : a l'interieur du reseau docker, un service en joint un
+# autre par son NOM (http://minio:9000). Depuis Windows, c'est localhost et le
+# port publie. Meme service, deux adresses selon d'ou l'on parle.
+
+name: fraud-mlops
+
+services:
+  # ---------------------------------------------------------------------------
+  # Stockage objet compatible S3
+  # ---------------------------------------------------------------------------
+  minio:
+    # quay.io et NON docker.io : MinIO a retire ses images de Docker Hub,
+    # `minio/minio` y renvoie desormais un 404.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      # :? fait echouer compose avec ce message si la variable manque, plutot
+      # que de demarrer MinIO avec des identifiants vides.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?copie .env.example vers .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?copie .env.example vers .env}
+    ports:
+      - "9000:9000"   # API S3
+      - "9001:9001"   # console web
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Creation du bucket, puis extinction
+  # ---------------------------------------------------------------------------
+  # MinIO ne cree pas ses buckets tout seul. Ce conteneur ephemere s'en charge
+  # puis s'arrete ; les autres services attendent qu'il ait TERMINE.
+  #
+  # La boucle `until` remplace une sonde de sante sur minio : elle reessaie
+  # jusqu'a ce que le serveur reponde, ce qui est robuste sans dependre d'un
+  # outil precis present dans l'image MinIO.
+  #
+  # $$ et non $ : on echappe l'interpolation de compose pour que ce soit le
+  # shell du conteneur qui lise la variable.
+  minio-setup:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      MLFLOW_BUCKET: ${MLFLOW_BUCKET:-mlflow}
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD >/dev/null 2>&1; do
+        echo '[setup] minio pas encore pret, nouvelle tentative dans 2s...';
+        sleep 2;
+      done;
+      mc mb --ignore-existing local/$$MLFLOW_BUCKET;
+      echo \"[setup] bucket $$MLFLOW_BUCKET pret\";
+      "
+
+  # ---------------------------------------------------------------------------
+  # Serveur de tracking et registre MLflow
+  # ---------------------------------------------------------------------------
+  # Utilise NOTRE image, avec une commande differente : une seule image a
+  # construire, et surtout la garantie que le client et le serveur ont la meme
+  # version de MLflow. Contrepartie assumee : ce conteneur embarque xgboost et
+  # pandas dont il n'a pas l'usage.
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command:
+      - mlflow
+      - server
+      - --backend-store-uri=sqlite:////mlflow/mlflow.db
+      - --default-artifact-root=s3://${MLFLOW_BUCKET:-mlflow}/
+      - --host=0.0.0.0
+      - --port=5000
+    environment:
+      # Sans cette variable, boto3 irait interroger s3.amazonaws.com.
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "5000:5000"
+    volumes:
+      # La base de tracking. Le dossier /mlflow est cree et possede par appuser
+      # dans le Dockerfile, donc le volume nomme en herite les permissions.
+      - mlflow-db:/mlflow
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+    # L'image porte un HEALTHCHECK visant :8000/health, que mlflow ne sert pas.
+    # On le remplace ici -- c'est le cout de la reutilisation d'image.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=4).status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      start_period: 40s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Le scoreur
+  # ---------------------------------------------------------------------------
+  scorer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      # Lu par src/config.py, qui accepte deja une surcharge par environnement.
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Le scoreur telecharge les artefacts directement depuis MinIO : l'URI
+      # s3:// dit QUOI, ces variables disent OU.
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+      AWS_DEFAULT_REGION: us-east-1
+      # Decommenter pour imposer un seuil metier different de celui du modele.
+      # FRAUD_THRESHOLD: "0.65"
+    ports:
+      - "8000:8000"
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  minio-data:
+  mlflow-db:

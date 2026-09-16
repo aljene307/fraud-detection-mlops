@@ -1,0 +1,43 @@
+# Aussi important que .gitignore : tout ce qui n'est pas exclu ici est envoye
+# au demon Docker a chaque construction (le "contexte de build"). Sans ce
+# fichier, chaque build copierait le venv (plusieurs Go), le CSV (144 Mo),
+# l'historique git et les artefacts MLflow -- construction interminable et image
+# obese.
+
+# Environnement Python local
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Donnees et sorties : jamais dans une image
+data/
+mlruns/
+mlartifacts/
+mlflow.db
+reports/
+
+# Historique et outillage
+.git/
+.github/
+.gitignore
+.gitattributes
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Tests et docs : l'image de production n'en a pas besoin
+tests/
+docs/
+NOTES.md
+SPEC.md
+CLAUDE.md
+
+# Secrets : ne doivent jamais entrer dans une couche d'image
+.env
+
+# Docker lui-meme
+docker-compose.yml
+.dockerignore
