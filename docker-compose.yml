@@ -91,6 +91,27 @@ services:
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
       AWS_DEFAULT_REGION: us-east-1
+      # Protection anti-DNS-rebinding de MLflow 3 : un middleware valide
+      # l'en-tete Host de chaque requete. Sa liste par defaut couvre localhost
+      # et les plages d'IP privees -- mais l'en-tete Host transporte LE NOM QUE
+      # LE CLIENT A ECRIT, pas l'IP resolue. Le scorer appelant
+      # http://mlflow:5000, l'en-tete vaut "mlflow:5000", qui n'est ni localhost
+      # ni une IP litterale : rejet 403.
+      #
+      # Symptome trompeur au passage : /health et /version sont EXEMPTES de
+      # cette validation, donc le conteneur se declarait healthy tout en etant
+      # inutilisable pour l'API.
+      #
+      # ATTENTION : cette liste REMPLACE les defauts, elle ne s'y ajoute pas
+      # (fastapi_security.py : `get_allowed_hosts_from_env() or
+      # get_default_allowed_hosts()`). Omettre localhost casserait
+      # l'entrainement depuis Windows et l'interface MLflow.
+      #
+      # Volontairement etroit : on nomme les hotes reellement utilises, sans "*"
+      # qui desactiverait la protection, et sans les jokers d'IP privees des
+      # defauts -- rien ici n'appelle MLflow par IP nue.
+      MLFLOW_SERVER_ALLOWED_HOSTS: >-
+        mlflow,mlflow:5000,localhost,localhost:5000,127.0.0.1,127.0.0.1:5000
     ports:
       - "5000:5000"
     volumes:
