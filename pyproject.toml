@@ -40,6 +40,10 @@ dependencies = [
     # MLflow s'en sert pour lire et ecrire les artefacts en s3:// (MinIO en
     # local, S3/GCS en production). Sans lui, un URI s3:// leve a l'execution.
     "boto3==1.43.91",
+    # Tire transitivement par mlflow et kaggle, mais le simulateur l'utilise
+    # DIRECTEMENT pour interroger l'API. Meme raisonnement que pyyaml, fastapi
+    # et boto3 : on ne depend pas d'une bibliotheque par accident.
+    "requests==2.34.2",
 ]
 
 # Non installe dans l'image Docker (Phase 2) : image plus legere, moins de
