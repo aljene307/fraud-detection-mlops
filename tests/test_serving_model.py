@@ -15,13 +15,17 @@ from mlflow.exceptions import MlflowException
 
 from src.config import MLFLOW_DB, PRODUCTION_ALIAS, REGISTERED_MODEL
 from src.serving.model import (
+    DEFAULT_TRACKING_WAIT_SECONDS,
     THRESHOLD_ENV_VAR,
+    TRACKING_WAIT_ENV_VAR,
     ModelBundle,
     ModelLoadError,
     extract_feature_columns,
     load_production_model,
     resolve_production_version,
     resolve_threshold,
+    tracking_wait_seconds,
+    wait_for_tracking_server,
 )
 
 # Colonnes volontairement DIFFERENTES de FEATURE_COLUMNS : c'est ce qui permet
@@ -365,3 +369,112 @@ def test_real_production_model_loads_with_its_threshold() -> None:
     assert "hour_of_day" in bundle.feature_columns
     assert "Time" not in bundle.feature_columns
     assert bundle.model_kind == "xgb"
+
+
+# ===========================================================================
+# Attente du serveur de tracking
+# ===========================================================================
+
+
+class FakeWaitClock:
+    """Horloge et sommeil simules : l'attente se verifie sans attendre."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def test_local_store_needs_no_waiting() -> None:
+    """Un store sqlite n'a pas de serveur a attendre."""
+    clock = FakeWaitClock()
+
+    assert wait_for_tracking_server(
+        "sqlite:///mlflow.db", clock=clock, sleep=clock.sleep, probe=lambda _: False
+    ) is True
+    assert clock.slept == []
+
+
+def test_reachable_server_returns_immediately() -> None:
+    clock = FakeWaitClock()
+    calls: list[str] = []
+
+    assert wait_for_tracking_server(
+        "http://mlflow:5000",
+        clock=clock,
+        sleep=clock.sleep,
+        probe=lambda url: calls.append(url) or True,
+    ) is True
+    assert clock.slept == []
+    assert calls == ["http://mlflow:5000/health"]
+
+
+def test_server_that_comes_up_late_is_waited_for() -> None:
+    """LE scenario observe : au redemarrage du demon Docker, les conteneurs
+    remontent simultanement et MLflow n'ecoute pas encore.
+
+    depends_on n'ordonne que `docker compose up`, donc la parade doit vivre
+    dans l'application.
+    """
+    clock = FakeWaitClock()
+    attempts = {"n": 0}
+
+    def probe(url: str) -> bool:
+        attempts["n"] += 1
+        return attempts["n"] >= 4          # repond a la 4e tentative
+
+    assert wait_for_tracking_server(
+        "http://mlflow:5000",
+        deadline_seconds=90.0,
+        interval_seconds=2.0,
+        clock=clock,
+        sleep=clock.sleep,
+        probe=probe,
+    ) is True
+    assert clock.slept == [2.0, 2.0, 2.0]
+    assert attempts["n"] == 4
+
+
+def test_waiting_gives_up_at_the_deadline() -> None:
+    """L'attente est BORNEE : sinon le port resterait ferme indefiniment."""
+    clock = FakeWaitClock()
+
+    assert wait_for_tracking_server(
+        "http://mlflow:5000",
+        deadline_seconds=10.0,
+        interval_seconds=2.0,
+        clock=clock,
+        sleep=clock.sleep,
+        probe=lambda _: False,
+    ) is False
+    assert sum(clock.slept) <= 10.0
+
+
+def test_probe_targets_the_health_endpoint() -> None:
+    """/health est EXEMPTE de la validation d'hote de MLflow 3 : il repond meme
+    avant qu'on ait regle MLFLOW_SERVER_ALLOWED_HOSTS."""
+    seen: list[str] = []
+    clock = FakeWaitClock()
+
+    wait_for_tracking_server(
+        "http://mlflow:5000/",
+        clock=clock,
+        sleep=clock.sleep,
+        probe=lambda url: seen.append(url) or True,
+    )
+
+    assert seen == ["http://mlflow:5000/health"]
+
+
+def test_wait_deadline_is_configurable() -> None:
+    assert tracking_wait_seconds({}) == DEFAULT_TRACKING_WAIT_SECONDS
+    assert tracking_wait_seconds({TRACKING_WAIT_ENV_VAR: "15"}) == 15.0
+    assert tracking_wait_seconds({TRACKING_WAIT_ENV_VAR: "   "}) == DEFAULT_TRACKING_WAIT_SECONDS
+    # Une valeur illisible ne doit pas empecher le service de demarrer.
+    assert tracking_wait_seconds({TRACKING_WAIT_ENV_VAR: "beaucoup"}) == DEFAULT_TRACKING_WAIT_SECONDS

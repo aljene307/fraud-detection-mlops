@@ -42,13 +42,20 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from src.config import MLFLOW_TRACKING_URI
 from src.serving.metrics import (
     measure_latency,
     observe_prediction,
     render_exposition,
     set_model_info,
 )
-from src.serving.model import ModelBundle, ModelLoadError, load_production_model
+from src.serving.model import (
+    ModelBundle,
+    ModelLoadError,
+    load_production_model,
+    tracking_wait_seconds,
+    wait_for_tracking_server,
+)
 from src.serving.schemas import (
     TRANSACTION_FIELDS,
     BatchIn,
@@ -105,6 +112,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     app.state.bundle = None
     app.state.load_error = None
+
+    # On attend que MLflow REPONDE avant de tenter le chargement. Sans cette
+    # attente, un redemarrage du demon Docker remonte tous les conteneurs
+    # simultanement (depends_on n'ordonne que `docker compose up`) et le scorer
+    # demarre degrade pour de bon, sans jamais reessayer.
+    #
+    # Seule la joignabilite est attendue, pas le contenu du registre : sur une
+    # pile neuve celui-ci est legitimement vide, et attendre bloquerait le port
+    # pour rien.
+    wait_for_tracking_server(
+        MLFLOW_TRACKING_URI, deadline_seconds=tracking_wait_seconds()
+    )
 
     try:
         bundle = load_production_model()

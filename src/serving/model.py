@@ -35,13 +35,16 @@ indefiniment.
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 import mlflow
+import requests
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 
@@ -57,6 +60,12 @@ THRESHOLD_ENV_VAR = "FRAUD_THRESHOLD"
 
 # Metrique posee par src/training/tracking.py sur le run qui a produit la version.
 THRESHOLD_METRIC = "frozen_threshold"
+
+# Combien de temps attendre que le serveur de tracking reponde au demarrage.
+TRACKING_WAIT_ENV_VAR = "FRAUD_MODEL_WAIT_SECONDS"
+DEFAULT_TRACKING_WAIT_SECONDS = 90.0
+
+logger = logging.getLogger(__name__)
 
 
 class ModelLoadError(RuntimeError):
@@ -127,6 +136,94 @@ def build_client(tracking_uri: str | None = None) -> MlflowClient:
     mlflow.set_tracking_uri(uri)
     mlflow.set_registry_uri(uri)
     return MlflowClient(tracking_uri=uri, registry_uri=uri)
+
+
+def tracking_wait_seconds(env: Mapping[str, str] | None = None) -> float:
+    """Echeance d'attente du serveur de tracking, surchargeable."""
+    raw = (os.environ if env is None else env).get(TRACKING_WAIT_ENV_VAR)
+    if raw is None or not raw.strip():
+        return DEFAULT_TRACKING_WAIT_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_TRACKING_WAIT_SECONDS
+
+
+def _probe_http(url: str) -> bool:
+    try:
+        return requests.get(url, timeout=2.0).status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def wait_for_tracking_server(
+    tracking_uri: str,
+    *,
+    deadline_seconds: float = DEFAULT_TRACKING_WAIT_SECONDS,
+    interval_seconds: float = 2.0,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    probe: Callable[[str], bool] | None = None,
+) -> bool:
+    """Attend que le serveur de tracking REPONDE. Renvoie True s'il repond.
+
+    Pourquoi cette attente existe, et pourquoi elle est separee du chargement :
+
+    ``depends_on: condition: service_healthy`` n'ordonne que ``docker compose
+    up``. Quand le DEMON Docker redemarre -- relancement de Docker Desktop,
+    reboot de la machine -- il remonte tous les conteneurs a politique de
+    redemarrage SIMULTANEMENT, sans consulter depends_on. Observe : les trois
+    conteneurs demarres a 5 millisecondes d'intervalle, le scorer recevant
+    "Connection refused" de MLflow qui n'ecoutait pas encore.
+
+    Le demarrage degrade faisait alors son office, mais sans reessai il signifie
+    "vivant mais JAMAIS pret" : il faut un humain pour s'en apercevoir. Et cela
+    ne peut pas se corriger dans le compose, Docker n'offrant aucun
+    ordonnancement au redemarrage du demon -- la parade doit vivre ici.
+
+    On attend seulement la JOIGNABILITE, jamais le contenu du registre. Sur une
+    pile neuve, le registre est legitimement vide jusqu'a la migration : attendre
+    le contenu ferait bloquer le port 90 s a chaque premier demarrage. MLflow
+    absent -> on attend ; MLflow present mais registre vide -> on echoue vite et
+    on passe degrade.
+
+    /health est utilise parce qu'il est EXEMPTE de la validation d'hote de
+    MLflow 3 : il repond meme avant qu'on ait regle MLFLOW_SERVER_ALLOWED_HOSTS.
+    """
+    if not tracking_uri.startswith(("http://", "https://")):
+        return True  # store local (sqlite, fichier) : rien a attendre
+
+    check = probe if probe is not None else _probe_http
+    url = f"{tracking_uri.rstrip('/')}/health"
+
+    started = clock()
+    attempts = 0
+    while True:
+        attempts += 1
+        if check(url):
+            if attempts > 1:
+                logger.info(
+                    "Serveur de tracking joignable apres %.1f s (%d tentatives).",
+                    clock() - started,
+                    attempts,
+                )
+            return True
+
+        if clock() - started >= deadline_seconds:
+            logger.error(
+                "Serveur de tracking toujours injoignable apres %.0f s (%d tentatives) : %s",
+                deadline_seconds,
+                attempts,
+                url,
+            )
+            return False
+
+        logger.warning(
+            "Serveur de tracking injoignable, nouvelle tentative dans %.0f s : %s",
+            interval_seconds,
+            url,
+        )
+        sleep(interval_seconds)
 
 
 def resolve_production_version(
