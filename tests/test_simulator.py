@@ -26,11 +26,13 @@ from src.simulator.replay import (
     MIN_SAMPLES_FOR_PERCENTILES,
     OUTSIDE_DOCKER_WARNING,
     LatencySummary,
+    Readiness,
     RunConfig,
     ServerSnapshot,
     SimulatorError,
     Stream,
     build_requests,
+    check_readiness,
     histogram_quantile,
     is_outside_docker,
     load_stream,
@@ -710,3 +712,111 @@ def test_report_shows_both_columns_and_their_gap() -> None:
     assert "serveur" in report
     assert "ecart p50" in report
     assert "BOUCLE OUVERTE" in report
+
+
+# ===========================================================================
+# Verification de /ready avant la campagne
+# ===========================================================================
+
+
+class ReadySession(RecordingSession):
+    """Doublure qui repond a /ready avec un etat choisi."""
+
+    def __init__(self, *, status: int = 200, body: Any = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._ready_status = status
+        self._ready_body = body if body is not None else {
+            "status": "ready",
+            "reason": None,
+            "model": {
+                "model_name": "fraud-detector",
+                "version": "2",
+                "model_kind": "xgb",
+                "threshold": 0.8080154657363892,
+                "threshold_source": "mlflow_run",
+            },
+        }
+
+    def get(self, url: str, timeout: float = 0) -> FakeResponse:
+        self.gets.append(url)
+        if url.endswith("/ready"):
+            return FakeResponse(self._ready_body, self._ready_status)
+        return super().get(url, timeout)
+
+
+def test_readiness_check_targets_the_ready_endpoint() -> None:
+    session = ReadySession()
+
+    readiness = check_readiness(session, "http://scorer:8000/")
+
+    assert readiness.ready is True
+    assert session.gets == ["http://scorer:8000/ready"]
+
+
+def test_ready_service_reports_the_served_version() -> None:
+    readiness = check_readiness(ReadySession(), "http://scorer:8000")
+
+    rendered = readiness.render("http://scorer:8000")
+    assert "v2" in rendered
+    assert "xgb" in rendered
+    assert "mlflow_run" in rendered
+
+
+def test_degraded_service_yields_an_actionable_message() -> None:
+    """LE point de cette verification.
+
+    Sans elle, un scorer degrade absorbe toute la campagne en 503 et produit un
+    rapport rempli d'echecs ou la cause n'apparait nulle part.
+    """
+    session = ReadySession(
+        status=503,
+        body={
+            "status": "not_ready",
+            "reason": "Aucun modele sous l'alias @production pour 'fraud-detector'.",
+            "model": None,
+        },
+    )
+
+    readiness = check_readiness(session, "http://scorer:8000")
+
+    assert readiness.ready is False
+    assert readiness.status == 503
+    rendered = readiness.render("http://scorer:8000")
+    assert "n'est pas pret" in rendered
+    assert "@production" in rendered
+    assert "curl http://scorer:8000/ready" in rendered
+    assert "--no-ready-check" in rendered
+
+
+def test_unreachable_service_is_reported_not_raised() -> None:
+    class Unreachable(ReadySession):
+        def get(self, url: str, timeout: float = 0) -> FakeResponse:
+            raise requests.ConnectionError("connection refused")
+
+    readiness = check_readiness(Unreachable(), "http://scorer:8000")
+
+    assert readiness.ready is False
+    assert readiness.status == 0
+    assert "injoignable" in (readiness.reason or "")
+
+
+def test_non_json_response_does_not_crash_the_check() -> None:
+    """Un intermediaire (proxy, load balancer) peut renvoyer du HTML."""
+
+    class Html(ReadySession):
+        def get(self, url: str, timeout: float = 0) -> FakeResponse:
+            response = FakeResponse(None, 502)
+            response.json = lambda: (_ for _ in ()).throw(ValueError("pas du JSON"))
+            return response
+
+    readiness = check_readiness(Html(), "http://scorer:8000")
+
+    assert readiness.ready is False
+    assert readiness.status == 502
+
+
+def test_readiness_render_is_stable_without_a_model_block() -> None:
+    readiness = Readiness(ready=False, status=503)
+
+    rendered = readiness.render("http://x:8000")
+    assert "n'est pas pret" in rendered

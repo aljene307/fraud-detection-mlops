@@ -130,6 +130,39 @@ docker compose restart scorer
 curl http://localhost:8000/ready
 ```
 
+### Replaying the test set as a stream
+
+```bash
+# Model throughput ceiling: one request carries 500 transactions
+docker compose run --rm simulator --mode batch --batch-size 500 --transactions 20000
+
+# What a real caller experiences: one transaction per request, at a held rate
+docker compose run --rm simulator --mode single --rate 120 --duration 30
+```
+
+The simulator sits behind `profiles: [sim]`, so `docker compose up` never starts
+it. Naming it in `docker compose run` activates its profile automatically — no
+`--profile sim` needed. It must stay out of the default stack because it *writes
+to the metrics it measures*: started with the stack, every `compose up` would
+inject transactions into the very counters the Phase 6 dashboards observe.
+
+Both numbers are legitimate and they measure different things. A batch request
+pays the per-request cost (~0.2 ms of validation and serialisation) once for 500
+transactions, so it measures the **model's** capacity. A real fraud API is
+called one transaction at a time at authorisation, so `--mode single` is the
+latency a caller actually sees.
+
+The report puts client-side and server-side latency side by side; their
+difference is everything that is not the model. Under a held rate it also shows
+the **scheduling delay** — sends are planned on the clock rather than chained to
+responses, so a stall shows up instead of silently throttling the load
+generator. That difference is not cosmetic: a measured run showed a server p99
+of 9.69 ms against a client p99 of 210.87 ms.
+
+`Class` is separated from the payloads and never sent — a real caller does not
+have it. It is kept aside to report observed recall, which the report labels as
+simulation-only.
+
 ### Why object storage rather than a shared folder
 
 A file-based artifact store writes **absolute paths** into the MLflow database:

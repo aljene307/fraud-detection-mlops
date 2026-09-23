@@ -26,6 +26,10 @@ Prometheus, Grafana, Evidently, GitHub Actions.
 - Serve locally:   uvicorn src.serving.app:app --reload
 - Full stack:      cp .env.example .env && docker compose up -d --build
                    (minio + mlflow + scorer; see README for the migration steps)
+- Replay a stream: docker compose run --rm simulator --mode batch --transactions 20000
+                   docker compose run --rm simulator --mode single --rate 120 --duration 30
+                   (behind profiles:[sim] so `up` never starts it — it writes to
+                   the very metrics it measures)
 - Regen the lock:  python scripts/freeze_lock.py
                    (NOT a bare `pip freeze` — a Windows lock carries pywin32,
                    which does not exist on Linux and breaks the Docker build)
