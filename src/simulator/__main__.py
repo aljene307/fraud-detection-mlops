@@ -10,11 +10,16 @@ import argparse
 import sys
 from pathlib import Path
 
+import requests
+
 from src.config import DATA_PROCESSED
 from src.simulator.replay import (
     DEFAULT_BASE_URL,
+    OUTSIDE_DOCKER_WARNING,
     RunConfig,
     SimulatorError,
+    check_readiness,
+    is_outside_docker,
     load_stream,
     render_progress,
     render_report,
@@ -89,6 +94,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="ne pas afficher la vue en direct, seulement le rapport final",
     )
+    parser.add_argument(
+        "--no-ready-check",
+        action="store_true",
+        help=(
+            "ne pas verifier /ready avant de tirer. Utile pour eprouver "
+            "volontairement le chemin degrade (toutes les requetes en 503)."
+        ),
+    )
     return parser
 
 
@@ -120,20 +133,33 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"Cible : {config.url}")
 
-    if config.warmup_requests:
-        print(f"Echauffement : {config.warmup_requests} requetes, exclues des mesures")
-
-    # L'avertissement est affiche AVANT la campagne autant qu'apres : mieux vaut
-    # qu'il arrete l'utilisateur avant qu'il ne lise des chiffres fausses.
-    from src.simulator.replay import OUTSIDE_DOCKER_WARNING, is_outside_docker
-
+    # L'avertissement est affiche AVANT la campagne : mieux vaut qu'il arrete
+    # l'utilisateur avant qu'il ne lise des chiffres fausses.
     if is_outside_docker(config.base_url):
         print(f"\n{OUTSIDE_DOCKER_WARNING}\n", file=sys.stderr)
 
+    # Une seule session pour la verification ET la campagne : la connexion TCP
+    # est reutilisee, donc on ne mesure pas la poignee de main.
+    session = requests.Session()
     try:
+        if not args.no_ready_check:
+            readiness = check_readiness(session, config.base_url)
+            print(readiness.render(config.base_url), file=sys.stdout if readiness.ready else sys.stderr)
+            if not readiness.ready:
+                return 1
+
+        # Annonce APRES la verification : l'afficher avant laisserait croire
+        # qu'un echauffement a eu lieu alors que la campagne n'a pas demarre.
+        if config.warmup_requests:
+            print(
+                f"Echauffement : {config.warmup_requests} requetes, "
+                "exclues des mesures"
+            )
+
         result = run_campaign(
             stream,
             config,
+            session=session,
             on_progress=None if args.quiet else lambda r: print(render_progress(r)),
         )
     except SimulatorError as exc:
@@ -142,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nInterrompu.\n", file=sys.stderr)
         return 130
+    finally:
+        session.close()
 
     print(render_report(result))
 

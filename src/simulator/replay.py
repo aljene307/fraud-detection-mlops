@@ -236,6 +236,70 @@ class ServerSnapshot:
         return histogram_quantile(self.buckets, share) * 1000
 
 
+@dataclass(frozen=True)
+class Readiness:
+    """Reponse de /ready avant de lancer la campagne."""
+
+    ready: bool
+    status: int
+    reason: str | None = None
+    model: dict[str, Any] | None = None
+
+    def render(self, base_url: str) -> str:
+        if self.ready:
+            model = self.model or {}
+            return (
+                f"Service pret : {model.get('model_name', '?')} "
+                f"v{model.get('version', '?')} ({model.get('model_kind', '?')}), "
+                f"seuil {model.get('threshold', float('nan')):.8f} "
+                f"[{model.get('threshold_source', '?')}]"
+            )
+
+        lines = [
+            f"ECHEC : le service n'est pas pret (HTTP {self.status or 'injoignable'}).",
+        ]
+        if self.reason:
+            lines += [f"  {line}" for line in self.reason.splitlines()]
+        lines += [
+            "",
+            f"  Verifie :  curl {base_url.rstrip('/')}/ready",
+            "  Tirer quand meme (pour eprouver le chemin degrade) : --no-ready-check",
+        ]
+        return "\n".join(lines)
+
+
+def check_readiness(
+    session: requests.Session, base_url: str, *, timeout: float = 5.0
+) -> Readiness:
+    """Interroge /ready UNE fois, avant la campagne.
+
+    Pourquoi cette verification existe : sans elle, un scorer en mode degrade
+    absorbe toute la campagne en 503 et produit un rapport rempli d'echecs, ou
+    la cause n'apparait nulle part. Une seule requete la transforme en message
+    actionnable.
+
+    Et pourquoi ``depends_on: condition: service_healthy`` ne suffit pas :
+    healthy signifie VIVANT (/health repond 200 meme sans modele), pas PRET.
+    C'est la distinction construite au step 2.B, et elle joue contre nous ici.
+    """
+    try:
+        response = session.get(f"{base_url.rstrip('/')}/ready", timeout=timeout)
+    except requests.RequestException as exc:
+        return Readiness(ready=False, status=0, reason=f"Service injoignable : {exc}")
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+
+    return Readiness(
+        ready=response.status_code == 200,
+        status=response.status_code,
+        reason=body.get("reason"),
+        model=body.get("model"),
+    )
+
+
 def read_server_snapshot(
     session: requests.Session, base_url: str, endpoint: str
 ) -> ServerSnapshot:

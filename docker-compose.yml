@@ -75,9 +75,20 @@ services:
   # version de MLflow. Contrepartie assumee : ce conteneur embarque xgboost et
   # pandas dont il n'a pas l'usage.
   mlflow:
+    # Meme image que le scorer, seule la commande differe. Le `image:` partage
+    # est ce qui evite la duplication : sans lui, compose fabriquait DEUX images
+    # de 2 Go depuis le meme Dockerfile (fraud-mlops-mlflow et
+    # fraud-mlops-scorer, IDs differents), et le simulateur en aurait fait trois.
+    #
+    # `build:` est repete plutot qu'omis : un service qui n'a QUE `image:` fait
+    # tenter un `pull` a compose, qui echoue bruyamment ("pull access denied for
+    # fraud-mlops") avant que le scorer ait construit. Avec `build:`, la seconde
+    # construction est entierement en cache -- une seconde -- et aucun pull n'est
+    # tente.
     build:
       context: .
       dockerfile: docker/Dockerfile
+    image: fraud-mlops:latest
     command:
       - mlflow
       - server
@@ -139,9 +150,12 @@ services:
   # Le scoreur
   # ---------------------------------------------------------------------------
   scorer:
+    # Seul service qui CONSTRUIT l'image ; mlflow et simulator la referencent.
+    # `image:` combine a `build:` donne un nom explicite au resultat.
     build:
       context: .
       dockerfile: docker/Dockerfile
+    image: fraud-mlops:latest
     environment:
       # Lu par src/config.py, qui accepte deja une surcharge par environnement.
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -159,6 +173,63 @@ services:
       mlflow:
         condition: service_healthy
     restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Simulateur de flux -- travail PONCTUEL, derriere un profil
+  # ---------------------------------------------------------------------------
+  # `profiles: [sim]` le rend invisible pour `docker compose up`. Trois raisons,
+  # par ordre d'importance :
+  #
+  #   1. Il POLLUE ce qu'il mesure. Le simulateur remplit fraud_predictions_total
+  #      et les histogrammes de latence. Demarre avec la pile, chaque
+  #      `compose up` injecterait 20 000 transactions dans les compteurs qu'on
+  #      cherche justement a observer -- les tableaux de bord de la Phase 6
+  #      mesureraient le simulateur.
+  #   2. C'est un travail ponctuel, pas un service. Lance par `up`, il tirerait
+  #      avant que le scorer ait charge son modele, puis resterait en Exited(1)
+  #      dans `compose ps`, qui aurait l'air casse alors que tout va bien.
+  #   3. Il a besoin d'arguments : un mode, un debit, une duree.
+  #
+  # Lancement :  docker compose run --rm simulator [arguments]
+  # Nommer explicitement un service profile ACTIVE son profil : pas besoin de
+  # --profile sim.
+  simulator:
+    # Meme image, meme raison de repeter `build:` que pour mlflow : eviter la
+    # tentative de pull. La construction est en cache.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: fraud-mlops:latest
+    profiles: [sim]
+    # --base-url vit dans l'ENTRYPOINT, pas dans command. Verifie : les
+    # arguments de `compose run` REMPLACENT command mais s'AJOUTENT a
+    # entrypoint. Dans command, tes arguments l'effaceraient et le simulateur
+    # retomberait sur http://localhost:8000 -- qui, a l'interieur du conteneur,
+    # designe le conteneur lui-meme et non le scorer.
+    entrypoint:
+      - python
+      - -m
+      - src.simulator
+      - --base-url=http://scorer:8000
+    # Campagne par defaut, remplacee des qu'on passe des arguments.
+    command: ["--mode", "batch", "--batch-size", "500", "--transactions", "20000"]
+    volumes:
+      # Montage LIE et non volume nomme : le parquet vit sur l'hote et le
+      # conteneur doit voir CELUI-LA. Il n'est pas dans l'image -- data/ est
+      # dans .dockerignore, 144 Mo de donnees n'ayant rien a faire dans une
+      # image. :ro parce qu'un outil de charge n'a aucune raison d'ecrire.
+      # /app/data correspond au WORKDIR, donc src/config.py y trouve
+      # DATA_PROCESSED = /app/data/processed.
+      - ./data:/app/data:ro
+    depends_on:
+      # ATTENTION : healthy signifie VIVANT (/health repond 200 meme sans
+      # modele), pas PRET. D'ou la verification de /ready par le simulateur
+      # lui-meme avant de tirer.
+      scorer:
+        condition: service_healthy
+    # Explicite : si quelqu'un fait `compose --profile sim up`, le simulateur
+    # fait sa campagne et s'arrete, il ne boucle pas.
+    restart: "no"
 
 volumes:
   minio-data:
