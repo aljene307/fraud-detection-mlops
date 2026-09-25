@@ -175,8 +175,23 @@ jobs:
       # xgb_smote etaient une question de recherche, tranchee en Phase 1.B et
       # archivee dans le bloc baseline ; les reentrainer a chaque push couterait
       # 21 s de plus pour un chiffre que personne ne lit.
-      - name: Entrainer XGBoost
-        run: python -m src.training.train --model xgb --no-mlflow
+      #
+      # #################################################################
+      # ###  TEMPORAIRE -- A REVERTER AVANT TOUTE FUSION DANS main    ###
+      # #################################################################
+      # On entraine DELIBEREMENT logreg (~0.76 de PR-AUC) au lieu de xgb
+      # (~0.877) pour prouver que le gate bloque une regression. Le plancher
+      # de config/gate.yaml n'est PAS touche : c'est lui, inchange a 0.80, qui
+      # doit rejeter ce modele. C'est exactement la borne basse pour laquelle
+      # il avait ete dimensionne en Phase 1.E -- "il doit rejeter un retour a
+      # la baseline lineaire (0.7602)".
+      #
+      # Le run DOIT etre rouge. Un run vert ici signifierait que le gate ne
+      # bloque rien, et donc que toute la Phase 4 est decorative.
+      # Nom entre guillemets : un ": " nu dans un scalaire YAML est lu comme un
+      # separateur de mapping et casse le fichier entier.
+      - name: "Entrainer le modele (TEMPORAIRE : logreg, pour eprouver le gate)"
+        run: python -m src.training.train --model logreg --no-mlflow
 
       # ------------------------------------------------------------------
       # LA LIGNE QUI BLOQUE
@@ -191,7 +206,7 @@ jobs:
       # DERNIERE commande, donc tee renverrait 0 et le gate ne bloquerait plus
       # rien. Le resume est ecrit par le step suivant, separement.
       - name: Appliquer le gate de qualite
-        run: python -m src.training.gate --report reports/training/xgb.json
+        run: python -m src.training.gate --report reports/training/logreg.json
 
       # if: always() -- ce resume a le plus de valeur quand le gate vient
       # d'echouer, or un step normal ne tournerait plus a ce stade.
@@ -201,7 +216,7 @@ jobs:
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, pathlib, yaml
 
-          report = pathlib.Path("reports/training/xgb.json")
+          report = pathlib.Path("reports/training/logreg.json")
           if not report.exists():
               print("### Gate PR-AUC\n\nAucun rapport : l'entrainement n'a pas abouti.")
               raise SystemExit(0)
@@ -211,16 +226,28 @@ jobs:
           floor = float(gate["min_pr_auc"])
           observed = float(data["test"]["pr_auc"])
 
+          # frozen_threshold est None quand la precision cible est inatteignable
+          # (cas reel : logreg plafonne a 87 % sur la validation). Formater None
+          # en .8f leve un TypeError, et ce step tournant en if: always(), il
+          # ajouterait un second X rouge pour une raison qui n'a rien a voir
+          # avec le gate -- exactement ce qui brouille un diagnostic.
+          def num(value, spec=".4f"):
+              return "n/a" if value is None else format(float(value), spec)
+
           print("### Gate PR-AUC\n")
           print("| | |")
           print("|---|---|")
           print(f"| Verdict | {'PASSE' if observed >= floor else 'BLOQUE'} |")
+          print(f"| modele | `{data['model_kind']}` |")
           print(f"| test_pr_auc observe | {observed:.4f} |")
           print(f"| plancher (config/gate.yaml) | {floor:.4f} |")
           print(f"| marge | {observed - floor:+.4f} |")
-          print(f"| recall @ p90 | {data['test'].get('recall_at_p90', float('nan')):.4f} |")
-          print(f"| seuil fige | {data['frozen_threshold']:.8f} |")
-          print(f"| duree d'ajustement | {data['fit_seconds']:.2f} s |")
+          print(f"| recall @ p90 | {num(data['test'].get('recall_at_p90'))} |")
+          print(f"| seuil fige | {num(data.get('frozen_threshold'), '.8f')} |")
+          print(f"| duree d'ajustement | {num(data.get('fit_seconds'), '.2f')} s |")
+
+          for warning in data.get("warnings") or []:
+              print(f"\n> [!WARNING]\n> {warning}")
           PY
 
       # Permet de lire le chiffre exact d'un run rouge sans le rejouer.
@@ -229,5 +256,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rapport-entrainement
-          path: reports/training/xgb.json
+          path: reports/training/logreg.json
           if-no-files-found: warn
