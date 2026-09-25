@@ -1,0 +1,233 @@
+# Gate de qualite CI (Phase 4).
+#
+# Rend executoire le plancher de config/gate.yaml : un modele sous 0.80 de
+# PR-AUC fait echouer la pipeline, et le job `image` du step 4.B ne demarrera
+# donc pas.
+#
+# Deux jobs volontairement PARALLELES. Ce sont deux signaux independants :
+# enchaines, un test rouge masquerait une regression du modele et il faudrait
+# deux allers-retours pour decouvrir les deux problemes.
+#
+# Ce que la CI n'a PAS besoin de faire tourner : serveur MLflow, MinIO, base de
+# donnees, bucket. `train.py --no-mlflow` ecrit un rapport JSON, et `gate.py` ne
+# lit que ce JSON plus config/gate.yaml. La CI juge ; elle ne publie pas.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Un seul run par branche : pousser trois fois de suite annule les deux premiers
+# au lieu d'entrainer trois modeles pour rien.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Moindre privilege. Le GITHUB_TOKEN du run ne peut que LIRE le depot ; le droit
+# d'ecrire des paquets sera ajoute au seul job qui en a besoin, en 4.B.
+permissions:
+  contents: read
+
+env:
+  # Meme version que docker/Dockerfile (python:3.13-slim-trixie) : la CI juge un
+  # modele qui tournera sur cet interpreteur-la.
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  # ===========================================================================
+  # Qualite du code -- SANS donnees
+  # ===========================================================================
+  # Aucun telechargement, aucun secret. Les 3 tests marques `requires_data`
+  # portent un @pytest.mark.skipif(not RAW_CSV.exists()) evalue A LA COLLECTE :
+  # ils se sautent d'eux-memes ici, et le compte affiche le prouve.
+  quality:
+    name: Lint + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          # Met en cache le repertoire de telechargement de pip, cle sur le
+          # contenu de pyproject.toml. Les versions y sont figees en `==`, donc
+          # la cle ne bouge qu'a un changement de dependance delibere.
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Installer les dependances
+        # Deux commandes, et l'ordre compte.
+        #
+        # 1. Le lock d'abord : c'est la cloture transitive EXACTE (123 paquets)
+        #    que l'image Docker installe. La CI juge donc un modele entraine sur
+        #    la meme pile que celle qui servira en production.
+        # 2. Puis le groupe dev, absent du lock par construction
+        #    (scripts/freeze_lock.py l'exclut deliberement). pip trouve tout deja
+        #    satisfait aux versions verrouillees et n'ajoute que pytest, ruff et
+        #    httpx2, plus l'installation editable qui rend `src` importable.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock.txt
+          pip install -e ".[dev]"
+
+      - name: ruff
+        run: ruff check .
+
+      - name: pytest
+        # Pas de -m "not requires_data" : on laisse le skipif operer, pour que la
+        # sortie montre noir sur blanc "3 skipped" et non "3 deselected".
+        run: pytest -q
+
+  # ===========================================================================
+  # Le gate de qualite du modele
+  # ===========================================================================
+  gate:
+    name: Entrainement + gate PR-AUC
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # src/config.py n'importe que os et pathlib, donc cette lecture fonctionne
+      # AVANT le pip install. On connait ainsi l'etat du cache avant de payer
+      # l'installation.
+      - name: Lire l'empreinte attendue du dataset
+        id: dataset
+        run: |
+          echo "sha256=$(python -c 'from src.config import EXPECTED_SHA256; print(EXPECTED_SHA256)')" >> "$GITHUB_OUTPUT"
+
+      # Le CONTENU est la cle. Changer EXPECTED_SHA256 dans config.py invalide ce
+      # cache automatiquement -- il n'existe aucune facon de servir d'anciennes
+      # donnees a une nouvelle empreinte.
+      #
+      # Volontairement SANS restore-keys : une restauration approchee rendrait un
+      # dataset DIFFERENT, ce qui viderait le gate de son sens. Mieux vaut
+      # retelecharger que comparer des choses differentes.
+      - name: Cache du dataset
+        id: cache-dataset
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: dataset-${{ steps.dataset.outputs.sha256 }}
+
+      # Seulement si le cache a manque : avec un cache chaud, la CI n'a aucun
+      # besoin de Kaggle, et exiger les secrets la ferait echouer pour rien
+      # (cas reel : une PR issue d'un fork, qui ne recoit jamais les secrets mais
+      # peut lire le cache du depot).
+      - name: Controler la presence des secrets Kaggle
+        if: steps.cache-dataset.outputs.cache-hit != 'true'
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          if [ -z "$KAGGLE_USERNAME" ] || [ -z "$KAGGLE_KEY" ]; then
+            echo "::error title=Secrets Kaggle absents::Le cache du dataset est vide et KAGGLE_USERNAME / KAGGLE_KEY ne sont pas definis. Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "Secrets presents ; le dataset sera telecharge."
+
+      - name: Installer les dependances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock.txt
+          pip install -e ".[dev]"
+
+      # Lance INCONDITIONNELLEMENT, cache chaud ou froid. ensure_dataset ne
+      # telecharge que si le fichier est absent, mais valide TOUJOURS : empreinte
+      # SHA-256, 284 807 lignes, 492 fraudes, colonnes exactes. Un cache corrompu
+      # est donc attrape ici, avant d'entrainer quoi que ce soit.
+      - name: Telecharger et valider le dataset
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: python -m src.data.download
+
+      # Ces 3 tests ne tournent JAMAIS ailleurs : ils se sautent partout ou le
+      # CSV est absent. Ici les donnees existent, donc c'est le seul endroit de
+      # la pipeline ou les constantes figees sont confrontees au vrai fichier.
+      - name: Tests exigeant le vrai dataset
+        run: pytest -m requires_data -q
+
+      # Defauts volontairement non surcharges : --strategy=stratified et
+      # --seed=42 sont exactement ce que config/gate.yaml a enregistre sous
+      # baseline. Passer autre chose comparerait un modele a une reference qui
+      # n'est pas la sienne.
+      - name: Construire le split 60/20/20
+        run: python -m src.features
+
+      # --no-mlflow : aucun serveur a joindre, aucune version enregistree dans un
+      # registre que personne n'a promue. L'entrainement ecrit
+      # reports/training/xgb.json et c'est tout ce dont le gate a besoin.
+      #
+      # --model xgb seul : c'est le modele que gate.yaml juge. logreg et
+      # xgb_smote etaient une question de recherche, tranchee en Phase 1.B et
+      # archivee dans le bloc baseline ; les reentrainer a chaque push couterait
+      # 21 s de plus pour un chiffre que personne ne lit.
+      - name: Entrainer XGBoost
+        run: python -m src.training.train --model xgb --no-mlflow
+
+      # ------------------------------------------------------------------
+      # LA LIGNE QUI BLOQUE
+      # ------------------------------------------------------------------
+      # gate.py se termine par `return 0 if result.passed else 1`. GitHub lit ce
+      # code de retour : non nul, le job devient rouge et les steps suivants ne
+      # tournent pas. Aucune analyse de logs, aucun grep, aucun parsing de sortie.
+      #
+      # Deliberement SANS tuyau. `... | tee -a "$GITHUB_STEP_SUMMARY"` serait
+      # tentant, mais le shell par defaut d'Actions est `bash -e`, PAS
+      # `bash -eo pipefail` : le code de retour d'un pipeline est celui de la
+      # DERNIERE commande, donc tee renverrait 0 et le gate ne bloquerait plus
+      # rien. Le resume est ecrit par le step suivant, separement.
+      - name: Appliquer le gate de qualite
+        run: python -m src.training.gate --report reports/training/xgb.json
+
+      # if: always() -- ce resume a le plus de valeur quand le gate vient
+      # d'echouer, or un step normal ne tournerait plus a ce stade.
+      - name: Resumer le resultat dans le run
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib, yaml
+
+          report = pathlib.Path("reports/training/xgb.json")
+          if not report.exists():
+              print("### Gate PR-AUC\n\nAucun rapport : l'entrainement n'a pas abouti.")
+              raise SystemExit(0)
+
+          data = json.loads(report.read_text(encoding="utf-8"))
+          gate = yaml.safe_load(pathlib.Path("config/gate.yaml").read_text(encoding="utf-8"))["gate"]
+          floor = float(gate["min_pr_auc"])
+          observed = float(data["test"]["pr_auc"])
+
+          print("### Gate PR-AUC\n")
+          print("| | |")
+          print("|---|---|")
+          print(f"| Verdict | {'PASSE' if observed >= floor else 'BLOQUE'} |")
+          print(f"| test_pr_auc observe | {observed:.4f} |")
+          print(f"| plancher (config/gate.yaml) | {floor:.4f} |")
+          print(f"| marge | {observed - floor:+.4f} |")
+          print(f"| recall @ p90 | {data['test'].get('recall_at_p90', float('nan')):.4f} |")
+          print(f"| seuil fige | {data['frozen_threshold']:.8f} |")
+          print(f"| duree d'ajustement | {data['fit_seconds']:.2f} s |")
+          PY
+
+      # Permet de lire le chiffre exact d'un run rouge sans le rejouer.
+      - name: Publier le rapport d'entrainement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-entrainement
+          path: reports/training/xgb.json
+          if-no-files-found: warn
