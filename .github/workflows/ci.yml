@@ -248,3 +248,143 @@ jobs:
           name: rapport-entrainement
           path: reports/training/xgb.json
           if-no-files-found: warn
+
+  # ===========================================================================
+  # L'image : construite partout, eprouvee partout, publiee seulement sur main
+  # ===========================================================================
+  # `needs` ne fait pas qu'ordonner, il CONDITIONNE : sa semantique par defaut
+  # est "tous les jobs listes doivent avoir reussi". C'est la seule ligne qui
+  # relie la qualite du modele a la livraison. Gate rouge => ce job n'est pas
+  # rouge, il est SKIPPED : il n'a jamais demarre. Le X reste ainsi sur le job
+  # qui a diagnostique le probleme, et non duplique sur celui qui en subit la
+  # consequence.
+  #
+  # ATTENTION : un `if: always()` (ou !cancelled(), ou failure()) au niveau de ce
+  # job ANNULERAIT ce conditionnement et le ferait tourner malgre un gate rouge.
+  # C'est pourquoi la distinction PR / main se fait sur les STEPS et jamais ici.
+  image:
+    name: Image Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [quality, gate]
+
+    # Ces permissions ECRASENT le bloc `contents: read` du workflow, pour ce job
+    # seulement. `quality` et `gate` restent incapables d'ecrire quoi que ce
+    # soit, meme si un paquet compromis y executait du code.
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      # github.repository vaut "aljene307/fraud-detection-mlops", deja en
+      # minuscules. GHCR REFUSE les majuscules dans un nom d'image : un compte
+      # avec une capitale casserait ici, et il faudrait abaisser la casse.
+      IMAGE: ghcr.io/${{ github.repository }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # buildx est le constructeur etendu de Docker (BuildKit). Il est requis ici
+      # pour une raison precise : lui seul sait lire et ecrire un cache de
+      # couches dans un magasin EXTERNE. Chaque run etant une VM neuve, le cache
+      # local de Docker est toujours vide -- sans cache externe, chaque
+      # construction reinstallerait les 123 paquets du lock depuis zero.
+      - uses: docker/setup-buildx-action@v3
+
+      # push: false, load: true -- on construit et on charge dans le demon local
+      # SANS publier, y compris sur main. L'ordre est delibere : on n'expose
+      # jamais une image qui n'a pas demarre. La publication vient apres le
+      # smoke test.
+      - name: Construire l'image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          # mode=max met aussi en cache les couches intermediaires, pas seulement
+          # celles de l'image finale : c'est ce qui evite de refaire le pip
+          # install quand seul src/ a change.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ------------------------------------------------------------------
+      # Le smoke test : "ca construit" est faible, "ca demarre et repond" non
+      # ------------------------------------------------------------------
+      # Le conteneur demarre forcement DEGRADE : la CI n'a ni serveur MLflow ni
+      # registre, donc aucun modele sous @production. C'est precisement ce qu'on
+      # veut eprouver. /health doit repondre 200 quand meme -- c'est la
+      # conception du step 2.B, et sans elle une sonde de liveness tuerait le pod
+      # en boucle sous Kubernetes pour un probleme recuperable.
+      #
+      # On interroge depuis le RUNNER via le port publie, pas depuis l'interieur :
+      # l'image slim n'embarque pas curl (d'ou le HEALTHCHECK en python).
+      - name: Verifier que l'image demarre et repond
+        run: |
+          docker run -d --name smoke -p 8000:8000 \
+            -e FRAUD_MODEL_WAIT_SECONDS=1 \
+            "$IMAGE:${{ github.sha }}"
+
+          for i in $(seq 1 45); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/health || true)
+            if [ "$code" = "200" ]; then
+              echo "/health a repondu 200 apres ${i}s"
+              echo "  corps : $(curl -s http://localhost:8000/health)"
+
+              # /ready doit dire 503 : le processus vit mais ne peut pas scorer.
+              # Observation et non assertion bloquante -- l'assertion dure porte
+              # sur /health, qui est la garantie demandee.
+              ready=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/ready || true)
+              echo "  /ready = $ready (503 attendu : aucun modele sous @production)"
+              if [ "$ready" != "503" ]; then
+                echo "::warning title=/ready inattendu::code $ready, 503 attendu sans registre"
+              fi
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::error title=L'image ne repond pas::/health n'a pas renvoye 200 en 45 s (dernier code : ${code:-aucun}). Si le conteneur est sorti, la cause est dans les logs ci-dessous."
+          docker logs smoke || true
+          exit 1
+
+      - name: Nettoyer le conteneur de test
+        if: always()
+        run: docker rm -f smoke || true
+
+      # Connexion seulement au moment de publier : rien avant n'a besoin du
+      # registre, l'image de base python:3.13-slim-trixie etant publique.
+      #
+      # Aucun secret a creer. Le GITHUB_TOKEN est fabrique par GitHub POUR CE RUN,
+      # limite a ce depot, et expire des que le run se termine. C'est aussi lui
+      # qui fait que GHCR rattache automatiquement le paquet au depot.
+      - name: Se connecter a GHCR
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # L'image est deja construite et taguee localement : on pousse, on ne
+      # reconstruit pas.
+      #
+      # Deux tags, et le second est celui qui compte. `latest` est MUTABLE : il
+      # designera demain autre chose qu'aujourd'hui. Le tag par SHA de commit est
+      # le seul moyen de dire "exactement cette construction-la", donc la base
+      # d'un retour arriere credible.
+      - name: Publier sur GHCR
+        if: github.ref == 'refs/heads/main'
+        run: |
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+          {
+            echo "### Image publiee"
+            echo
+            echo '```'
+            echo "docker pull $IMAGE:${{ github.sha }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
