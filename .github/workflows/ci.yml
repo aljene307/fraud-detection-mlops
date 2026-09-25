@@ -176,22 +176,12 @@ jobs:
       # archivee dans le bloc baseline ; les reentrainer a chaque push couterait
       # 21 s de plus pour un chiffre que personne ne lit.
       #
-      # #################################################################
-      # ###  TEMPORAIRE -- A REVERTER AVANT TOUTE FUSION DANS main    ###
-      # #################################################################
-      # On entraine DELIBEREMENT logreg (~0.76 de PR-AUC) au lieu de xgb
-      # (~0.877) pour prouver que le gate bloque une regression. Le plancher
-      # de config/gate.yaml n'est PAS touche : c'est lui, inchange a 0.80, qui
-      # doit rejeter ce modele. C'est exactement la borne basse pour laquelle
-      # il avait ete dimensionne en Phase 1.E -- "il doit rejeter un retour a
-      # la baseline lineaire (0.7602)".
-      #
-      # Le run DOIT etre rouge. Un run vert ici signifierait que le gate ne
-      # bloque rien, et donc que toute la Phase 4 est decorative.
-      # Nom entre guillemets : un ": " nu dans un scalaire YAML est lu comme un
-      # separateur de mapping et casse le fichier entier.
-      - name: "Entrainer le modele (TEMPORAIRE : logreg, pour eprouver le gate)"
-        run: python -m src.training.train --model logreg --no-mlflow
+      # Le plancher a ete eprouve pour de vrai : en substituant logreg (0.7602)
+      # a xgb, le job est devenu rouge au step du gate, plancher inchange a 0.80,
+      # tandis que `quality` restait vert -- seul le modele etait mauvais, pas le
+      # code. C'est la borne basse pour laquelle le plancher avait ete dimensionne.
+      - name: Entrainer XGBoost
+        run: python -m src.training.train --model xgb --no-mlflow
 
       # ------------------------------------------------------------------
       # LA LIGNE QUI BLOQUE
@@ -206,7 +196,7 @@ jobs:
       # DERNIERE commande, donc tee renverrait 0 et le gate ne bloquerait plus
       # rien. Le resume est ecrit par le step suivant, separement.
       - name: Appliquer le gate de qualite
-        run: python -m src.training.gate --report reports/training/logreg.json
+        run: python -m src.training.gate --report reports/training/xgb.json
 
       # if: always() -- ce resume a le plus de valeur quand le gate vient
       # d'echouer, or un step normal ne tournerait plus a ce stade.
@@ -216,7 +206,7 @@ jobs:
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, pathlib, yaml
 
-          report = pathlib.Path("reports/training/logreg.json")
+          report = pathlib.Path("reports/training/xgb.json")
           if not report.exists():
               print("### Gate PR-AUC\n\nAucun rapport : l'entrainement n'a pas abouti.")
               raise SystemExit(0)
@@ -256,5 +246,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rapport-entrainement
-          path: reports/training/logreg.json
+          path: reports/training/xgb.json
           if-no-files-found: warn
