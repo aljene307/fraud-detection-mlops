@@ -272,7 +272,7 @@ def test_runs_are_reproducible_at_a_fixed_seed(splits: dict) -> None:
 
 
 def test_no_run_reports_accuracy(splits: dict) -> None:
-    """La regle de CLAUDE.md doit survivre a la traversee de l'entraineur."""
+    """La convention du projet doit survivre a la traversee de l'entraineur."""
     result = run_one("xgb", splits, seed=42)
     for block in (result.val, result.test):
         assert not any("accuracy" in key.lower() for key in block)

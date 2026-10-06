@@ -118,7 +118,6 @@ richer raw features, more feature-engineering surface.
 
 ```
 fraud-mlops/
-├── CLAUDE.md                  # project context for Claude Code (see §10)
 ├── README.md                  # the recruiter-facing story + diagram + metrics
 ├── data/                      # gitignored; download script pulls the CSV
 ├── src/
@@ -156,7 +155,8 @@ fraud-mlops/
 ## 9. Build plan (phased — ~2–3 weeks part-time)
 
 **Phase 0 — Setup (½ day)**
-Repo, virtualenv, `pyproject.toml`, `CLAUDE.md`, data download script, `.gitignore`.
+Repo, virtualenv, `pyproject.toml`, the project conventions (§10), data download
+script, `.gitignore`.
 _Done when:_ `python -m src.features` produces a train/test split.
 
 **Phase 1 — Baseline model + MLflow (1–2 days)**
@@ -197,32 +197,33 @@ _Done when:_ a stranger can understand and run it from the README alone.
 
 ---
 
-## 10. `CLAUDE.md` starter (drop this at the repo root)
+## 10. Project conventions
 
-```md
-# Fraud Detection MLOps Platform
-
-## Stack
-Python, XGBoost, MLflow, FastAPI, Docker, Kubernetes (kind), Helm,
+### Stack
+Python, XGBoost, MLflow, FastAPI, Docker, Kubernetes (minikube), Helm,
 Prometheus, Grafana, Evidently, GitHub Actions.
 
-## Conventions
+### Conventions
 - src/ layout, typed functions, pytest for everything testable.
 - Never report accuracy for the fraud model — this dataset is 0.17% positive.
   Primary metric is PR-AUC; also track recall at fixed precision.
-- Models are loaded ONLY from the MLflow "Production" stage in serving code.
+- Models are loaded ONLY via the MLflow alias
+  `models:/fraud-detector@production` in serving code — never a run URI, never
+  a pickle. Registry *stages* are deprecated since MLflow 2.9; aliases replace
+  them.
 
-## Commands
+### Commands
 - Split data:      python -m src.features
 - Train + log:     python -m src.training.train
+- Promote best:    python -m src.training.train --promote --min-pr-auc 0.80
+- Check the gate:  python -m src.training.gate --report reports/training/xgb.json
 - Serve locally:   uvicorn src.serving.app:app --reload
-- Full stack:      docker compose up
+- Full stack:      docker compose up -d --build
 - Deploy to k8s:   helm install fraud ./helm
 
-## Design rules
+### Design rules
 - The metric gate in CI must block any model below the PR-AUC threshold.
 - Keep the vertical slice working at all times; deepen after it's green.
-```
 
 ---
 

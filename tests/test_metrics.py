@@ -320,7 +320,7 @@ def scored() -> tuple[np.ndarray, np.ndarray]:
 
 
 def test_evaluate_never_reports_accuracy(scored) -> None:
-    """Regle de CLAUDE.md, verifiee par un test plutot que par un commentaire :
+    """Convention du projet, verifiee par un test plutot que par un commentaire :
     un commentaire ne casse pas la CI."""
     metrics = evaluate(*scored)
 

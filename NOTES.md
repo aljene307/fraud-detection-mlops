@@ -4,7 +4,7 @@ Double usage : mémoire technique du projet, et fiche de révision pour les
 entretiens. La partie factuelle est remplie ; la partie « à compléter » est
 volontairement vide — l'exercice consiste à l'écrire avec mes propres mots.
 
-État au commit `c6648a5` · Phase 0 et Phase 1 terminées · 140 tests.
+État au commit `a57c121` · Phase 0 et Phase 1 terminées · 140 tests.
 
 ---
 
@@ -12,15 +12,15 @@ volontairement vide — l'exercice consiste à l'écrire avec mes propres mots.
 
 | Step | Commit | Ce qui a été fait |
 |---|---|---|
-| **0.A** | `1b5b46b` | Init du dépôt sur `main`, `.gitignore` (données, `mlflow.db`, token Kaggle), `.gitattributes` en LF. Renommage `SPEC.md.md` → `SPEC.md`, nettoyage du wrapper heredoc collé dans `CLAUDE.md`. |
-| **0.B** | `279ffec` | `pyproject.toml` avec versions figées, venv, squelette `src/`. `src/config.py` centralise chemins et identifiants MLflow. Sonde PyPI : aucune dépendance sans wheel Python 3.13. |
-| **0.C** | `255d906` | `src/data/download.py` : API Kaggle avec repli manuel, puis validation dure en 4 couches (existence → parsing → colonnes → contenu). Code de retour non nul pour la CI. |
-| **0.C + 0.D** | `4015e44` | SHA-256 figé dans `config.py`. Pipeline de variables `src/features/` : `log_amount`, `hour_of_day`, `Time` retiré, split stratifié 60/20/20 (`--strategy=time` en option), `split_manifest.json`. |
-| **0.E** | `2fb6440` | 42 tests sur validation et découpage, sur données synthétiques. Correction d'un bug : le manifeste était écrit en dur dans `data/processed/` alors que les parquets suivaient `--out-dir`. |
-| **1.A** | `5cf652f` | `src/training/metrics.py` : PR-AUC via `average_precision_score`, `recall_at_precision`, matrice de confusion. 34 tests, dont la démonstration ROC-AUC 0,9774 vs PR-AUC 0,0417. |
-| **1.B** | `f45a319` | `src/training/train.py` : trois stratégies de déséquilibre. Seuil choisi sur la validation, figé pour le test. 25 tests dont l'espion anti-fuite SMOTE. |
-| **1.C** | `c3b4ef6` | `src/training/tracking.py` : runs MLflow, artefacts, registre, alias `@production`. Correction de `config.py` (SQLite au lieu du store fichier, refusé par MLflow 3). Promotion manuelle via `--promote`. |
-| **1.E** | `c6648a5` | `config/gate.yaml` (plancher 0,80) + `src/training/gate.py`, lecteur exécutable à code de retour 0/1. 23 tests. |
+| **0.A** | `b2edc97` | Init du dépôt sur `main`, `.gitignore` (données, `mlflow.db`, token Kaggle), `.gitattributes` en LF. Renommage `SPEC.md.md` → `SPEC.md`, nettoyage du wrapper heredoc collé dans le fichier de conventions. |
+| **0.B** | `33db74d` | `pyproject.toml` avec versions figées, venv, squelette `src/`. `src/config.py` centralise chemins et identifiants MLflow. Sonde PyPI : aucune dépendance sans wheel Python 3.13. |
+| **0.C** | `a1597f0` | `src/data/download.py` : API Kaggle avec repli manuel, puis validation dure en 4 couches (existence → parsing → colonnes → contenu). Code de retour non nul pour la CI. |
+| **0.C + 0.D** | `c83aa1c` | SHA-256 figé dans `config.py`. Pipeline de variables `src/features/` : `log_amount`, `hour_of_day`, `Time` retiré, split stratifié 60/20/20 (`--strategy=time` en option), `split_manifest.json`. |
+| **0.E** | `8f3c83c` | 42 tests sur validation et découpage, sur données synthétiques. Correction d'un bug : le manifeste était écrit en dur dans `data/processed/` alors que les parquets suivaient `--out-dir`. |
+| **1.A** | `b30dde3` | `src/training/metrics.py` : PR-AUC via `average_precision_score`, `recall_at_precision`, matrice de confusion. 34 tests, dont la démonstration ROC-AUC 0,9774 vs PR-AUC 0,0417. |
+| **1.B** | `f2ff332` | `src/training/train.py` : trois stratégies de déséquilibre. Seuil choisi sur la validation, figé pour le test. 25 tests dont l'espion anti-fuite SMOTE. |
+| **1.C** | `a17d7cd` | `src/training/tracking.py` : runs MLflow, artefacts, registre, alias `@production`. Correction de `config.py` (SQLite au lieu du store fichier, refusé par MLflow 3). Promotion manuelle via `--promote`. |
+| **1.E** | `a57c121` | `config/gate.yaml` (plancher 0,80) + `src/training/gate.py`, lecteur exécutable à code de retour 0/1. 23 tests. |
 
 *Il n'y a pas de step 1.D : les tests de métriques ont été écrits avec le module
 lui-même en 1.A, et le figeage du SHA-256 (0.C) a été livré avec le découpage

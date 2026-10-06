@@ -33,7 +33,6 @@ tests/
 docs/
 NOTES.md
 SPEC.md
-CLAUDE.md
 
 # Secrets : ne doivent jamais entrer dans une couche d'image
 .env
