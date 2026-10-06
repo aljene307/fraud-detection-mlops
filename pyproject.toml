@@ -61,7 +61,8 @@ dev = [
 ]
 
 # `src` est un vrai paquet importable (et non un dossier "src-layout"), parce
-# que CLAUDE.md documente les commandes sous la forme `python -m src.features`.
+# que les conventions du projet documentent les commandes sous la forme
+# `python -m src.features`.
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]

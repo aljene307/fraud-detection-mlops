@@ -87,7 +87,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_forbidden_metrics_are_rejected() -> None:
-    """La regle de CLAUDE.md appliquee a l'execution.
+    """La convention du projet appliquee a l'execution.
 
     C'est aussi la raison pour laquelle mlflow.autolog() est proscrit : il
     journalise training_accuracy_score sans rien demander.

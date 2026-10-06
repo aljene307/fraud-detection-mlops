@@ -22,7 +22,7 @@ Vocabulaire MLflow :
   repointer l'alias, sans redeploiement ni changement de code.
 
 Pourquoi PAS ``mlflow.autolog()`` : il journalise automatiquement
-``training_accuracy_score``. Il violerait la regle de CLAUDE.md des la premiere
+``training_accuracy_score``. Il violerait les conventions du projet des la premiere
 ligne, et en silence. D'ou un logging explicite, double d'un garde-fou qui leve
 si une cle contenant "accuracy" se presente.
 """
@@ -67,7 +67,7 @@ if TYPE_CHECKING:  # pragma: no cover - uniquement pour le typage
 # approuve, plutot que de retomber sur cloudpickle qui, lui, ne verifie rien.
 SKOPS_TRUSTED_TYPES = ["xgboost.core.Booster", "xgboost.sklearn.XGBClassifier"]
 
-# Regle de CLAUDE.md, appliquee a l'execution et pas seulement en commentaire.
+# Convention du projet, appliquee a l'execution et pas seulement en commentaire.
 FORBIDDEN_METRIC_SUBSTRINGS = ("accuracy",)
 
 
@@ -103,7 +103,7 @@ def assert_no_forbidden_metrics(metrics: dict[str, float]) -> None:
     if offenders:
         raise TrackingError(
             f"Metriques interdites : {offenders}. Ce projet ne rapporte jamais "
-            "d'accuracy (voir CLAUDE.md)."
+            "d'accuracy (voir les conventions du projet, SPEC.md section 10)."
         )
 
 
